@@ -26,6 +26,9 @@ importers:
       '@belflow/sdk':
         specifier: workspace:*
         version: link:../../packages/beldex-sdk
+      '@belflow/x402':
+        specifier: workspace:*
+        version: link:../../packages/x402-beldex
       '@prisma/client':
         specifier: 6.19.3
         version: 6.19.3(prisma@6.19.3(typescript@5.9.3))(typescript@5.9.3)
@@ -123,6 +126,28 @@ importers:
       '@noble/hashes':
         specifier: 2.4.0
         version: 2.4.0
+    devDependencies:
+      '@types/node':
+        specifier: 26.6.5
+        version: 26.6.5
+      '@vitest/coverage-v8':
+        specifier: 5.0.4
+        version: 5.0.4(vitest@5.0.4)
+      tsup:
+        specifier: 9.0.0
+        version: 9.0.0(jiti@2.7.0)(postcss@8.5.30)(typescript@5.9.3)
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 5.0.4
+        version: 5.0.4(@types/node@26.6.5)(@vitest/coverage-v8@5.0.4)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0))
+
+  packages/x402-beldex:
+    dependencies:
+      '@belflow/sdk':
+        specifier: workspace:*
+        version: link:../beldex-sdk
     devDependencies:
       '@types/node':
         specifier: 26.6.5
