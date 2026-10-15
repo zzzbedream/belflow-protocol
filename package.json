@@ -18,7 +18,8 @@
     "e2e": "pnpm --filter @belflow/web e2e",
     "db:push": "pnpm --filter @belflow/web db:push",
     "db:generate": "pnpm --filter @belflow/web db:generate",
-    "test:audit": "turbo run test:audit"
+    "test:audit": "turbo run test:audit",
+    "testnet:deploy": "pnpm --filter @belflow/web testnet:deploy"
   },
   "devDependencies": {
     "@prisma/client": "6.19.3",
