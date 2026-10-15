@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { GET, POST } from '@/app/api/faucet/route';
 import { db } from '@/server/db';
-import { claimFaucet, hashClientIp } from '@/server/faucet';
+import { FAUCET_CAPS, claimFaucet, hashClientIp, normalizeIp } from '@/server/faucet';
 import { mockRuntime } from '@/server/mockChain';
 import { ensureBusd, jsonRequest } from './helpers';
 
@@ -50,6 +50,21 @@ describe('evaluator faucet (mock devnet)', () => {
     expect(dump).toContain(hashClientIp(ip));
     expect(hashClientIp(ip)).toMatch(/^[0-9a-f]{64}$/);
     expect(hashClientIp(ip)).not.toBe(hashClientIp('203.0.113.78'));
+  });
+
+  it('collapses IPv6 to its /64 so one host cannot rotate addresses', () => {
+    expect(normalizeIp('2001:db8:abcd:12::1')).toBe('2001:0db8:abcd:0012::/64');
+    expect(normalizeIp('2001:db8:abcd:12:ffff:1:2:3')).toBe('2001:0db8:abcd:0012::/64');
+    expect(hashClientIp('2001:db8:abcd:12::1')).toBe(hashClientIp('2001:db8:abcd:12:9::9'));
+    expect(normalizeIp('::ffff:198.51.100.7')).toBe('198.51.100.7');
+    expect(normalizeIp('198.51.100.7')).toBe('198.51.100.7');
+  });
+
+  it('enforces a global cap across all recipients and IPs', async () => {
+    const cap = FAUCET_CAPS['mock-devnet'].perHour;
+    await db.faucetClaim.createMany({ data: Array.from({ length: cap + 1 }, (_, i) => ({ network: 'mock-devnet', recipient: `filler-${i}`, ipHash: `filler-${i}` })) });
+    await expect(claimFaucet({ network: 'mock-devnet', recipient: fresh('capped') }, '198.51.100.250')).rejects.toThrow(/global limit/);
+    await db.faucetClaim.deleteMany({ where: { recipient: { startsWith: 'filler-' } } });
   });
 
   it('routes: config is public, claims validate input and never take amounts from the client', async () => {

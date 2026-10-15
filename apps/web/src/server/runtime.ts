@@ -73,6 +73,9 @@ async function buildMock(): Promise<NetworkRuntime> {
 
 async function buildTestnet(env: ServerEnv): Promise<NetworkRuntime> {
   if (!env.BELDEX_WALLET_RPC_URL) throw notConfigured('Beldex Testnet wallet-rpc (BELDEX_WALLET_RPC_URL)');
+  if (env.BELFLOW_FAUCET_ENABLED && env.BELFLOW_FAUCET_ACCOUNT_INDEX === 0) {
+    throw new Error('BELFLOW_FAUCET_ACCOUNT_INDEX must not be 0: the faucet would spend from the treasury account.');
+  }
   const wallet = new WalletRpc(
     new JsonRpcClient({
       url: env.BELDEX_WALLET_RPC_URL,

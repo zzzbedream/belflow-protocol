@@ -3,6 +3,7 @@ import {
   CHANGE_UNLOCK_BLOCKS,
   belflowErrorCode,
   canonicalJson,
+  isEligible,
   matchOutgoing,
   isValidAddress,
   planBatches,
@@ -233,7 +234,8 @@ export async function runPayroll(request: PayrollRequest): Promise<PayrollRunRes
     const recipients = chunk.recipientIds.map((id) => byId.get(id)).filter((r): r is BatchPaymentRecipient => Boolean(r));
     // Record where the chain was before broadcasting: the reconciler only
     // accepts wallet transfers from this point on (never an older identical payment).
-    const startHeight = await runtime.chainHeight().catch(() => null);
+    // Wallet height (same source as the wallet history the reconciler reads).
+    const startHeight = await (runtime.treasury.walletHeight?.() ?? runtime.chainHeight()).catch(() => null);
     chunks = chunks.map((c) =>
       c.index === chunk.index ? { ...c, status: 'SUBMITTING', startedAt: Date.now(), ...(startHeight !== null ? { startHeight } : {}) } : c,
     );
@@ -311,75 +313,95 @@ async function recordPayrollTxs(jobId: string, chunkIndex: number, txHashes: str
   }
 }
 
-/** Blocks after which an unseen broadcast is considered dropped and safe to resend. */
+/** Wallet-scanned blocks after which an unseen broadcast is considered dropped. */
 export const RECONCILE_SAFE_BLOCKS = 10;
-const RECONCILE_CLOCK_SKEW_S = 60;
+/** Mempool entries are only compared by time; generous tolerance (wrong rejections are unsafe). */
+const RECONCILE_POOL_SKEW_S = 6 * 60 * 60;
 
 /**
- * Resolves chunks left UNKNOWN (timeout or crash after broadcast) by looking
- * at the sending wallet's own outgoing transfers:
- * - every output found in txs not attributed elsewhere, at/after the chunk's
- *   start height → SENT;
- * - nothing found and ≥ RECONCILE_SAFE_BLOCKS since the start → PENDING
- *   (safe to resend with the same idempotency key);
- * - otherwise stays UNKNOWN (partial matches always need a human).
+ * Resolves chunks left UNKNOWN (timeout or crash after broadcast). The rule
+ * is asymmetric on purpose: marking SENT needs a full match, marking PENDING
+ * (resendable) needs positive proof that nothing was broadcast.
+ *
+ * - A tx already recorded for THIS chunk (crash between record and save) → SENT.
+ * - Every output found in wallet transfers not owned by another chunk,
+ *   at/after the chunk's start height → SENT.
+ * - PENDING only when: the wallet has scanned ≥ RECONCILE_SAFE_BLOCKS past
+ *   the start AND there is no unattributed outgoing transfer at all since the
+ *   start (including entries without destination data, which could be ours).
+ * - Anything else stays UNKNOWN for a human.
  */
 export async function reconcilePayrollJob(request: PayrollRequest): Promise<PayrollRunResult> {
   const runtime = await getRuntime(request.network);
+  const listOutgoing = runtime.treasury.listOutgoingTransfers?.bind(runtime.treasury);
+  if (!listOutgoing) throw new HttpError(422, 'This provider cannot list outgoing transfers.', 'UNSUPPORTED_CAPABILITY');
   const existing = await db.payrollBatchJob.findUnique({ where: { idempotencyKey: request.idempotencyKey } });
   if (!existing) throw new HttpError(404, 'Payroll job not found.', 'NOT_FOUND');
   if (existing.payloadHash !== payloadHash(request)) throw conflict('Payload does not match this payroll job.');
   if (!(await claim(existing))) return { job: toJobDto(existing), sent: [], events: ['Another runner is processing this payroll.'] };
+
   let job = await db.payrollBatchJob.findUniqueOrThrow({ where: { id: existing.id } });
-  if (!runtime.treasury.listOutgoingTransfers) throw new HttpError(422, 'This provider cannot list outgoing transfers.', 'UNSUPPORTED_CAPABILITY');
-
-  const byId = new Map(request.recipients.map((r) => [r.id, r]));
-  const recorded = new Set((await db.payrollTxRecord.findMany({ select: { txHash: true } })).map((row) => row.txHash));
-  const height = await runtime.chainHeight().catch(() => null);
-  const events: string[] = [];
   let chunks = JSON.parse(job.chunksJson) as ChunkState[];
+  try {
+    const byId = new Map(request.recipients.map((r) => [r.id, r]));
+    const records = await db.payrollTxRecord.findMany({ select: { txHash: true, jobId: true, chunkIndex: true } });
+    const walletHeight = await (runtime.treasury.walletHeight?.() ?? Promise.resolve(null)).catch(() => null);
+    const events: string[] = [];
 
-  for (const chunk of chunks) {
-    if (chunk.status !== 'UNKNOWN' && chunk.status !== 'SUBMITTING') continue;
-    const expected = [];
-    for (const id of chunk.recipientIds) {
-      const recipient = byId.get(id);
-      if (!recipient) continue;
-      expected.push({ address: recipient.resolvedAddress, amountAtomic: await toAtomic(request.network, recipient.tokenId, recipient.amount), assetId: recipient.tokenId });
+    for (const chunk of chunks) {
+      if (chunk.status !== 'UNKNOWN' && chunk.status !== 'SUBMITTING') continue;
+      const own = records.filter((r) => r.jobId === job.id && r.chunkIndex === chunk.index).map((r) => r.txHash);
+      const foreign = new Set(records.filter((r) => !(r.jobId === job.id && r.chunkIndex === chunk.index)).map((r) => r.txHash));
+      let next: ChunkState;
+      if (own.length > 0) {
+        next = { ...chunk, status: 'SENT', txHashes: own };
+        events.push(`Chunk ${chunk.index + 1}: broadcast was already recorded (${own.length} tx), marked SENT.`);
+      } else {
+        const expected = [];
+        for (const id of chunk.recipientIds) {
+          const recipient = byId.get(id);
+          if (recipient) expected.push({ address: recipient.resolvedAddress, amountAtomic: await toAtomic(request.network, recipient.tokenId, recipient.amount), assetId: recipient.tokenId });
+        }
+        const filter = {
+          ...(chunk.startHeight !== undefined ? { sinceHeight: chunk.startHeight } : {}),
+          ...(chunk.startedAt !== undefined ? { sinceTimestamp: Math.floor(chunk.startedAt / 1000) - RECONCILE_POOL_SKEW_S } : {}),
+          excludeTxHashes: foreign,
+        };
+        const candidates = await listOutgoing(chunk.startHeight !== undefined ? { sinceHeight: chunk.startHeight } : {});
+        const match = matchOutgoing(candidates, expected, filter);
+        const unattributed = candidates.filter((transfer) => isEligible(transfer, filter));
+        const scannedPast = walletHeight !== null && chunk.startHeight !== undefined && walletHeight - chunk.startHeight >= RECONCILE_SAFE_BLOCKS;
+        if (match.complete) {
+          await recordPayrollTxs(job.id, chunk.index, match.txHashes);
+          next = { ...chunk, status: 'SENT', txHashes: match.txHashes };
+          events.push(`Chunk ${chunk.index + 1}: found in wallet history (${match.txHashes.length} tx), marked SENT.`);
+        } else if (unattributed.length === 0 && scannedPast) {
+          next = { ...chunk, status: 'PENDING' };
+          events.push(`Chunk ${chunk.index + 1}: no outgoing transfer at all in ${RECONCILE_SAFE_BLOCKS}+ scanned blocks, safe to resend.`);
+        } else {
+          next = { ...chunk, status: 'UNKNOWN', needsReconciliation: unattributed.length > 0 || chunk.needsReconciliation === true };
+          events.push(
+            unattributed.length > 0
+              ? `Chunk ${chunk.index + 1}: ${unattributed.length} unattributed outgoing transfer(s) since start (${match.matchedOutputs}/${expected.length} outputs matched); manual review required.`
+              : `Chunk ${chunk.index + 1}: not found yet; the wallet must scan ${RECONCILE_SAFE_BLOCKS} blocks past the start before it can be resent.`,
+          );
+        }
+      }
+      chunks = chunks.map((c) => (c.index === chunk.index ? next : c));
     }
-    const candidates = await runtime.treasury.listOutgoingTransfers(chunk.startHeight !== undefined ? { sinceHeight: chunk.startHeight } : {});
-    const match = matchOutgoing(candidates, expected, {
-      ...(chunk.startHeight !== undefined ? { sinceHeight: chunk.startHeight } : {}),
-      ...(chunk.startedAt !== undefined ? { sinceTimestamp: Math.floor(chunk.startedAt / 1000) - RECONCILE_CLOCK_SKEW_S } : {}),
-      excludeTxHashes: recorded,
+
+    const allSent = chunks.every((c) => c.status === 'SENT');
+    const stillUnknown = chunks.some((c) => c.status === 'UNKNOWN');
+    job = await save(job.id, chunks, {
+      status: allSent ? JOB_STATUS.confirmed : JOB_STATUS.failed,
+      lastError: allSent ? null : stillUnknown ? 'Some chunks still need reconciliation.' : 'Reconciled: resume to send the remaining chunks.',
     });
-    let next: ChunkState = chunk;
-    if (match.complete) {
-      await recordPayrollTxs(job.id, chunk.index, match.txHashes);
-      match.txHashes.forEach((hash) => recorded.add(hash));
-      next = { ...chunk, status: 'SENT', txHashes: match.txHashes };
-      events.push(`Chunk ${chunk.index + 1}: found in wallet history (${match.txHashes.length} tx), marked SENT.`);
-    } else if (match.matchedOutputs === 0 && height !== null && chunk.startHeight !== undefined && height - chunk.startHeight >= RECONCILE_SAFE_BLOCKS) {
-      next = { ...chunk, status: 'PENDING' };
-      events.push(`Chunk ${chunk.index + 1}: not broadcast after ${RECONCILE_SAFE_BLOCKS}+ blocks, safe to resend.`);
-    } else {
-      next = { ...chunk, status: 'UNKNOWN', needsReconciliation: match.matchedOutputs > 0 || chunk.needsReconciliation === true };
-      events.push(
-        match.matchedOutputs > 0
-          ? `Chunk ${chunk.index + 1}: partial match (${match.matchedOutputs}/${expected.length}); manual review required.`
-          : `Chunk ${chunk.index + 1}: not found yet; wait ${RECONCILE_SAFE_BLOCKS} blocks before it can be resent.`,
-      );
-    }
-    chunks = chunks.map((c) => (c.index === chunk.index ? next : c));
+    return { job: toJobDto(job), sent: [], events };
+  } catch (error) {
+    // Always release the claim; unresolved chunks stay UNKNOWN (never resent).
+    await save(job.id, chunks, { status: JOB_STATUS.failed, lastError: `Reconciliation error: ${(error as Error).message}` });
+    throw error;
   }
-
-  const allSent = chunks.every((c) => c.status === 'SENT');
-  const stillUnknown = chunks.some((c) => c.status === 'UNKNOWN');
-  job = await save(job.id, chunks, {
-    status: allSent ? JOB_STATUS.confirmed : JOB_STATUS.failed,
-    lastError: allSent ? null : stillUnknown ? 'Some chunks still need reconciliation.' : 'Reconciled: resume to send the remaining chunks.',
-  });
-  return { job: toJobDto(job), sent: [], events };
 }
 
 async function chunkVolume(network: AppNetwork, recipients: BatchPaymentRecipient[]): Promise<string> {

@@ -201,6 +201,8 @@ export interface IBeldexProvider {
   listOutgoingTransfers?(filter?: { sinceHeight?: number }): Promise<OutgoingTransfer[]>;
   /** Current chain height as seen by this provider. */
   chainHeight?(): Promise<number>;
+  /** Height the sending wallet has scanned up to (its history is complete up to here). */
+  walletHeight?(): Promise<number>;
   /** New receiving subaddress of this wallet (one per invoice binds payments to it). */
   createSubaddress?(label: string): Promise<string>;
   /** Re-export a tx secret key from the sending wallet. */

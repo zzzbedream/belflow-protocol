@@ -186,6 +186,18 @@ export class MockChain {
     return { asset, tx };
   }
 
+  /** emit_asset: the owner mints more supply of an asset it deployed. */
+  emitAsset(owner: string, assetId: string, amount: bigint): MockTx {
+    const asset = own(this.state.assets, assetId);
+    if (!asset) throw new ValidationError(`Unknown asset ${assetId}.`);
+    if (asset.owner !== owner) throw new ValidationError('Only the asset owner can emit.');
+    if (amount <= 0n) throw new ValidationError('Emission must be positive.');
+    const tx = this.executeTransfer(owner, [], false, { kind: 'deploy', mint: { address: owner, assetId, amount } });
+    const updated: MockAsset = { ...asset, currentSupply: (BigInt(asset.currentSupply) + amount).toString() };
+    this.state = { ...this.state, assets: { ...this.state.assets, [assetId]: updated } };
+    return tx;
+  }
+
   // -------------------------------------------------------------- transfers
 
   transfer(from: string, outputs: MockTransferOutput[], options: { flash: boolean }): MockTx {

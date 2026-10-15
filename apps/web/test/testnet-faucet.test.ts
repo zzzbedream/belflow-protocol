@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 process.env.BELDEX_WALLET_RPC_URL = 'http://wallet.test:19092/json_rpc';
 process.env.BELFLOW_FAUCET_ENABLED = 'true';
 process.env.BELFLOW_FAUCET_ACCOUNT_INDEX = '3';
+process.env.BELFLOW_TRUSTED_IP_HEADER = 'x-real-ip';
 
 const TREASURY = encodeAddress({ network: 'testnet', kind: 'standard', spendPublicKey: '01'.repeat(32), viewPublicKey: '02'.repeat(32) });
 const EVALUATOR = encodeAddress({ network: 'testnet', kind: 'standard', spendPublicKey: '03'.repeat(32), viewPublicKey: '04'.repeat(32) });
@@ -38,7 +39,7 @@ describe('testnet faucet', () => {
     const response = await POST(
       new Request('http://localhost:3000/api/faucet', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-forwarded-for': '192.0.2.99' },
+        headers: { 'Content-Type': 'application/json', 'x-real-ip': '192.0.2.99' },
         body: JSON.stringify({ network: 'testnet', recipient: EVALUATOR }),
       }),
     );

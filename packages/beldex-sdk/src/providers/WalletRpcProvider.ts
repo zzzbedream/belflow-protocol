@@ -112,6 +112,11 @@ export class WalletRpcProvider implements IBeldexProvider {
     return height;
   }
 
+  /** The wallet's own scanned height (may lag the daemon while syncing). */
+  async walletHeight(): Promise<number> {
+    return (await this.wallet.getHeight()).height;
+  }
+
   /** Outgoing, pending and pool transfers from the wallet cache, with destinations. */
   async listOutgoingTransfers(filter: { sinceHeight?: number } = {}): Promise<OutgoingTransfer[]> {
     const result = await this.wallet.getTransfers({

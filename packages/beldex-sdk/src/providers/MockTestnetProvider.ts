@@ -175,6 +175,10 @@ export class MockTestnetProvider implements IBeldexProvider {
     return (await this.api.getInfo()).height;
   }
 
+  walletHeight(): Promise<number> {
+    return this.chainHeight();
+  }
+
   async listOutgoingTransfers(filter: { sinceHeight?: number } = {}): Promise<OutgoingTransfer[]> {
     const txs = await this.api.getOutgoingTransfers(this.requireAddress(), filter.sinceHeight);
     return txs.map((tx) => ({

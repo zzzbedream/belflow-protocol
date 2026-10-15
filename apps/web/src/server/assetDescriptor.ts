@@ -1,9 +1,8 @@
 import 'server-only';
-import { randomUUID } from 'node:crypto';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
-import path from 'node:path';
 import { z } from 'zod';
-import { stringifyJsonSafe, type AssetDescriptorWriter } from '@belflow/sdk';
+
+/** Hardened descriptor writer (UUID names, path containment, "wx" + 0600, cleanup in finally). */
+export { createAssetDescriptorWriter } from '@belflow/sdk/node';
 
 /** Strict payload for a Privacy Token deploy request. Unknown keys are rejected. */
 export const tokenDeploySchema = z
@@ -21,29 +20,3 @@ export const tokenDeploySchema = z
   .strict();
 
 export type TokenDeployInput = z.infer<typeof tokenDeploySchema>;
-
-/**
- * Writes deploy_new_asset descriptors into a directory shared with
- * beldex-wallet-rpc. The file name is generated server-side
- * (crypto.randomUUID), the resolved path must stay inside the base directory,
- * the file is created exclusively (flag "wx", mode 0600) and the caller's
- * cleanup runs in a finally block (see WalletRpcProvider.mintPrivacyToken).
- */
-export function createAssetDescriptorWriter(directory: string): AssetDescriptorWriter {
-  const base = path.resolve(directory);
-  return async (descriptor) => {
-    const file = path.resolve(base, `${randomUUID()}.json`);
-    if (path.dirname(file) !== base || !file.startsWith(base + path.sep)) {
-      throw new Error('Refusing to write an asset descriptor outside BELDEX_ASSET_DESCRIPTOR_DIR.');
-    }
-    await mkdir(base, { recursive: true });
-    const cleanup = () => rm(file, { force: true });
-    try {
-      await writeFile(file, stringifyJsonSafe(descriptor), { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-    } catch (error) {
-      await cleanup();
-      throw error;
-    }
-    return { path: file, cleanup };
-  };
-}

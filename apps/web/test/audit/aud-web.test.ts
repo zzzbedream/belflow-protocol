@@ -135,6 +135,33 @@ describe('AUD-04 (web): broadcast + timeout mid-payroll, then reconcile', () => 
     expect(broadcasts).toBe(2);
   });
 
+  it('a chunk whose tx was recorded before a crash is reconciled as SENT, never resent', async () => {
+    const request = { network: 'mock-devnet' as const, idempotencyKey: uuid(), useFlash: false, recipients: employeeRecipients(2, 'BDX', '0.03') };
+    const done = await runPayroll(request);
+    // Crash between "record tx" and "save SENT": the row still says SUBMITTING.
+    const crashed = done.job.chunks.map((c) => ({ ...c, status: 'SUBMITTING', txHashes: [] }));
+    await db.payrollBatchJob.update({ where: { id: done.job.id }, data: { status: 'FAILED', chunksJson: JSON.stringify(crashed) } });
+    mockRuntime().chain.mineBlocks(20);
+    const reconciled = await reconcilePayrollJob(request);
+    expect(reconciled.job.chunks[0]).toMatchObject({ status: 'SENT', txHashes: done.job.txHashes });
+    expect(reconciled.events.join(' ')).toMatch(/already recorded/);
+  });
+
+  it('keeps a chunk UNKNOWN when any unattributed outgoing transfer exists since its start', async () => {
+    const runtime = await getRuntime('mock-devnet');
+    vi.spyOn(runtime.treasury, 'sendBatchChunk').mockRejectedValueOnce(new OutcomeUnknownError('transfer'));
+    const request = { network: 'mock-devnet' as const, idempotencyKey: uuid(), useFlash: false, recipients: employeeRecipients(1, 'BDX', '0.07') };
+    await runPayroll(request);
+    // An unrelated treasury send after the chunk started (could be ours with lost destinations).
+    const chain = mockRuntime().chain;
+    chain.mineBlocks(3);
+    chain.transfer(chain.createAccount('treasury'), [{ address: chain.createAccount('employee:lucas'), assetId: 'BDX', amount: 123n }], { flash: false });
+    chain.mineBlocks(20);
+    const reconciled = await reconcilePayrollJob(request);
+    expect(reconciled.job.chunks[0]?.status).toBe('UNKNOWN');
+    expect(reconciled.events.join(' ')).toMatch(/unattributed/);
+  });
+
   it('does not attribute an older identical payroll to an uncertain chunk', async () => {
     const recipients = employeeRecipients(2, 'BDX', '0.02');
     await runPayroll({ network: 'mock-devnet', idempotencyKey: uuid(), useFlash: false, recipients });

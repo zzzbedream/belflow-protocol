@@ -37,12 +37,18 @@ export interface OutgoingMatch {
 const normalizeAsset = (assetId: string | undefined): string =>
   !assetId || assetId.toUpperCase() === 'BDX' ? 'BDX' : assetId.toLowerCase();
 
-function eligible(transfer: OutgoingTransfer, filter: OutgoingFilter): boolean {
+/**
+ * Confirmed transfers are filtered by height only: block timestamps can lag
+ * real time by tens of minutes, and dropping a real tx is the unsafe
+ * direction. The timestamp filter applies to mempool/pending entries only.
+ */
+export function isEligible(transfer: OutgoingTransfer, filter: OutgoingFilter): boolean {
   if (filter.excludeTxHashes?.has(transfer.txHash.toLowerCase())) return false;
-  if (filter.sinceHeight !== undefined && transfer.height !== null && transfer.height < filter.sinceHeight) return false;
-  if (filter.sinceTimestamp !== undefined && transfer.timestamp !== null && transfer.timestamp < filter.sinceTimestamp) return false;
-  return true;
+  if (transfer.height !== null) return filter.sinceHeight === undefined || transfer.height >= filter.sinceHeight;
+  return filter.sinceTimestamp === undefined || transfer.timestamp === null || transfer.timestamp >= filter.sinceTimestamp;
 }
+
+const eligible = isEligible;
 
 /**
  * Assigns each expected output to one destination of one eligible transfer

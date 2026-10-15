@@ -4,6 +4,7 @@ import {
   BDX_DECIMALS,
   NATIVE_TOKEN_ID,
   belflowErrorCode,
+  decodeAddress,
   hasUnlockedFunds,
   parseUnits,
   type BatchPaymentRecipient,
@@ -30,12 +31,46 @@ export const faucetRequestSchema = z
   })
   .strict();
 
+/** Global caps (all recipients/IPs together) so rotation cannot drain the faucet. */
+export const FAUCET_CAPS = {
+  'mock-devnet': { perHour: 500, perDay: 5_000 },
+  testnet: { perHour: 20, perDay: 100 },
+} as const;
+
+/** IPv6 hosts control a whole /64: rate-limit the prefix, not the address. */
+export function normalizeIp(ip: string): string {
+  const value = ip.trim().toLowerCase();
+  if (!value.includes(':') || /^::ffff:\d+\.\d+\.\d+\.\d+$/.test(value)) return value.replace(/^::ffff:/, '');
+  const [head = '', tail = ''] = value.split('::');
+  const left = head ? head.split(':') : [];
+  const right = tail ? tail.split(':') : [];
+  const groups = value.includes('::') ? [...left, ...Array(8 - left.length - right.length).fill('0'), ...right] : left;
+  return `${groups.slice(0, 4).map((g) => g.padStart(4, '0')).join(':')}::/64`;
+}
+
 /**
- * HMAC-SHA256 with the server secret: the 2^32 IPv4 space cannot be
- * brute-forced back to an address without SESSION_SECRET. No raw IP is stored.
+ * HMAC-SHA256 under a key derived from the server secret (not the session
+ * key itself): the 2^32 IPv4 space cannot be brute-forced back to an address
+ * without the secret. No raw IP is stored; rows are swept after 24 h.
  */
 export function hashClientIp(ip: string): string {
-  return createHmac('sha256', serverEnv().SESSION_SECRET).update(`faucet-ip:${ip}`).digest('hex');
+  const key = createHmac('sha256', serverEnv().SESSION_SECRET).update('belflow-faucet-ip-key-v1').digest();
+  return createHmac('sha256', key).update(normalizeIp(ip)).digest('hex');
+}
+
+/**
+ * Rate-limit key for a recipient: integrated addresses collapse to their
+ * standard address. Distinct subaddresses of one wallet cannot be linked
+ * without its keys, so the per-recipient limit is advisory; the per-IP and
+ * global caps are the real bound.
+ */
+function recipientKey(address: string): string {
+  try {
+    const decoded = decodeAddress(address);
+    return decoded.kind === 'integrated' ? `${decoded.network}:${decoded.spendPublicKey}:${decoded.viewPublicKey}` : address;
+  } catch {
+    return address;
+  }
 }
 
 export interface FaucetResult {
@@ -47,7 +82,10 @@ export interface FaucetResult {
 
 export async function faucetConfig(network: AppNetwork) {
   const token = await findToken(network, FAUCET_GRANT.tokenTicker);
-  const enabled = network === 'mock-devnet' || serverEnv().BELFLOW_FAUCET_ENABLED;
+  // Real funds need a trusted client-IP header: without a proxy that sets it,
+  // X-Forwarded-For is client-controlled and every limit could be bypassed.
+  const env = serverEnv();
+  const enabled = network === 'mock-devnet' || (env.BELFLOW_FAUCET_ENABLED && Boolean(process.env.BELFLOW_TRUSTED_IP_HEADER?.trim()));
   return {
     enabled,
     grants: [
@@ -65,10 +103,18 @@ export async function faucetConfig(network: AppNetwork) {
  */
 async function reserveClaim(network: AppNetwork, recipient: string, ipHash: string): Promise<string> {
   const claim = await db.faucetClaim.create({ data: { network, recipient, ipHash } });
-  const since = new Date(Date.now() - FAUCET_WINDOW_MS);
-  const competing = await db.faucetClaim.count({
-    where: { network, createdAt: { gte: since }, id: { not: claim.id }, OR: [{ recipient }, { ipHash }] },
-  });
+  const now = Date.now();
+  const since = new Date(now - FAUCET_WINDOW_MS);
+  const [competing, lastHour, lastDay] = await Promise.all([
+    db.faucetClaim.count({ where: { network, createdAt: { gte: since }, id: { not: claim.id }, OR: [{ recipient }, { ipHash }] } }),
+    db.faucetClaim.count({ where: { network, createdAt: { gte: new Date(now - 3_600_000) } } }),
+    db.faucetClaim.count({ where: { network, createdAt: { gte: since } } }),
+  ]);
+  const caps = FAUCET_CAPS[network];
+  if (lastHour > caps.perHour || lastDay > caps.perDay) {
+    await db.faucetClaim.delete({ where: { id: claim.id } });
+    throw new HttpError(429, 'The faucet reached its global limit. Try again later.', 'FAUCET_GLOBAL_LIMIT');
+  }
   if (competing > 0) {
     await db.faucetClaim.delete({ where: { id: claim.id } });
     throw new HttpError(429, `One faucet claim per address and per connection every ${FAUCET_WINDOW_MS / 3_600_000} h.`, 'FAUCET_LIMIT');
@@ -118,6 +164,12 @@ async function sendTestnet(address: string, tokenId: string | null): Promise<{ g
 export async function claimFaucet(input: z.infer<typeof faucetRequestSchema>, clientIp: string): Promise<FaucetResult> {
   const config = await faucetConfig(input.network);
   if (!config.enabled) throw notFound('The testnet faucet is disabled on this deployment.');
+  // Cheapest check first: an IP inside its window costs one indexed query, no RPC.
+  const ipHash = hashClientIp(clientIp);
+  const recentFromIp = await db.faucetClaim.count({
+    where: { network: input.network, ipHash, createdAt: { gte: new Date(Date.now() - FAUCET_WINDOW_MS) } },
+  });
+  if (recentFromIp > 0) throw new HttpError(429, `One faucet claim per address and per connection every ${FAUCET_WINDOW_MS / 3_600_000} h.`, 'FAUCET_LIMIT');
   const runtime = await getRuntime(input.network);
   const { address } = await runtime.bns.resolveRecipient(input.recipient);
   const token = await findToken(input.network, FAUCET_GRANT.tokenTicker);
@@ -135,23 +187,32 @@ export async function claimFaucet(input: z.infer<typeof faucetRequestSchema>, cl
     }
   }
 
-  const claimId = await reserveClaim(input.network, address, hashClientIp(clientIp));
+  const claimId = await reserveClaim(input.network, recipientKey(address), ipHash);
+  let outcome: { grants: FaucetResult['grants']; partial: boolean };
   try {
-    const outcome =
+    outcome =
       input.network === 'mock-devnet'
         ? { grants: await sendMock(address, token?.tokenId ?? null), partial: false }
         : await sendTestnet(address, token?.tokenId ?? null);
-    const status = outcome.partial ? 'PARTIAL' : 'SENT';
-    await db.faucetClaim.update({
-      where: { id: claimId },
-      data: { status, txHashesJson: JSON.stringify(outcome.grants.map((g) => g.txHash).filter(Boolean)) },
-    });
-    return { claimId, recipient: address, status, grants: outcome.grants };
   } catch (error) {
-    // Nothing was sent: free the slot so the evaluator can retry.
-    await db.faucetClaim.delete({ where: { id: claimId } }).catch(() => undefined);
+    // Free the slot only when the failure is known to be pre-broadcast. A
+    // timeout (OUTCOME_UNKNOWN) or anything else may mean funds left: keep it.
+    if (PRE_BROADCAST_CODES.has(belflowErrorCode(error) ?? '')) {
+      await db.faucetClaim.delete({ where: { id: claimId } }).catch(() => undefined);
+    } else {
+      await db.faucetClaim.update({ where: { id: claimId }, data: { status: 'UNKNOWN' } }).catch(() => undefined);
+    }
     throw error;
   }
+  // Funds are out: a DB failure here must never free the claim.
+  const status = outcome.partial ? 'PARTIAL' : 'SENT';
+  await db.faucetClaim
+    .update({ where: { id: claimId }, data: { status, txHashesJson: JSON.stringify(outcome.grants.map((g) => g.txHash).filter(Boolean)) } })
+    .catch((error: unknown) => console.error('[belflow] faucet claim status update failed', (error as Error).message));
+  return { claimId, recipient: address, status, grants: outcome.grants };
 }
+
+/** Errors raised before anything is broadcast (safe to free the claim). */
+const PRE_BROADCAST_CODES = new Set(['FUNDS_LOCKED', 'INSUFFICIENT_FUNDS', 'VALIDATION', 'RPC_ERROR', 'UNSUPPORTED_CAPABILITY']);
 
 export const FAUCET_RETRY_AFTER_SECONDS = RETRY_AFTER_SECONDS;
