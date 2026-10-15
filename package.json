@@ -1,0 +1,26 @@
+{
+  "name": "belflow-protocol",
+  "private": true,
+  "description": "Confidential payroll, selective compliance receipts and x402 AI payment rails on Beldex.",
+  "license": "MIT",
+  "packageManager": "pnpm@11.0.9",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev --filter=@belflow/web",
+    "test": "turbo run test",
+    "test:coverage": "turbo run test:coverage",
+    "typecheck": "turbo run typecheck",
+    "lint": "turbo run lint",
+    "test:testnet": "pnpm --filter @belflow/sdk test:testnet",
+    "e2e": "pnpm --filter @belflow/web e2e",
+    "db:push": "pnpm --filter @belflow/web db:push",
+    "db:generate": "pnpm --filter @belflow/web db:generate"
+  },
+  "devDependencies": {
+    "turbo": "2.11.8",
+    "typescript": "5.9.3"
+  }
+}

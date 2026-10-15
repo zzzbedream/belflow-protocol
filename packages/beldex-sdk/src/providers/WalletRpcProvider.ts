@@ -1,0 +1,277 @@
+import { BnsResolver, createRpcBnsBackend } from '../bns/resolver';
+import { createDaemonTxInspector, createExplorerTxInspector } from '../compliance/txInspection';
+import type { TxInspection, VerificationSources } from '../compliance/verifier';
+import { BDX_DECIMALS, FLASH_FEE_MULTIPLIER, NATIVE_TOKEN_ID, PRIORITY_FLASH, PRIORITY_NORMAL } from '../constants';
+import { FundsLockedError, InsufficientFundsError, RpcError, UnsupportedCapabilityError, ValidationError } from '../errors';
+import type { DaemonRpc } from '../rpc/daemon';
+import { toBigIntAmount } from '../rpc/json';
+import type { TransferDestination, WalletRpc } from '../rpc/wallet';
+import type {
+  BNSResolution,
+  BatchPaymentRecipient,
+  BeldexNetwork,
+  ConfidentialTxPart,
+  ConfidentialTxResult,
+  IBeldexProvider,
+  PrivacyTokenMetadata,
+  VerificationResult,
+  WalletConnection,
+} from '../types';
+import { formatUnits, parseUnits } from '../units';
+import { FULL_CAPABILITIES, executeBatch, summarizeBatch } from './batch';
+
+/** Descriptor consumed by deploy_new_asset (written to a file on the wallet host). */
+export interface AssetDescriptor {
+  ticker: string;
+  full_name: string;
+  total_max_supply: bigint;
+  current_supply: bigint;
+  decimal_point: number;
+  hidden_supply: boolean;
+  meta_info: string;
+}
+
+/** Writes the descriptor where wallet-rpc can read it; the caller must clean up. */
+export type AssetDescriptorWriter = (descriptor: AssetDescriptor) => Promise<{ path: string; cleanup: () => Promise<void> }>;
+
+export interface WalletRpcProviderOptions {
+  wallet: WalletRpc;
+  daemon?: DaemonRpc;
+  network: Exclude<BeldexNetwork, 'mock-devnet'>;
+  /** Public explorer API used for tx inspection when no daemon is configured. */
+  explorerApiUrl?: string;
+  writeAssetDescriptor?: AssetDescriptorWriter;
+  /** Decimals for assets this wallet did not deploy. */
+  decimalsFor?: (assetId: string) => Promise<number | undefined>;
+}
+
+const TOO_LARGE = /too (big|large)|too many (outputs|destinations)|would be too large/i;
+const NOT_ENOUGH_UNLOCKED = /not enough unlocked/i;
+const NOT_ENOUGH_MONEY = /not enough (money|funds)/i;
+
+function translateTransferError(error: unknown, tokenId: string): unknown {
+  if (!(error instanceof RpcError)) return error;
+  if (NOT_ENOUGH_UNLOCKED.test(error.message)) return new FundsLockedError(tokenId, -1);
+  if (NOT_ENOUGH_MONEY.test(error.message)) return new InsufficientFundsError(tokenId);
+  return error;
+}
+
+/** Estimated flash burn: the surcharge above the base fee. */
+function estimatedBurn(feeAtomic: bigint, flash: boolean): bigint {
+  return flash ? feeAtomic - feeAtomic / FLASH_FEE_MULTIPLIER : 0n;
+}
+
+/** Enterprise sidecar: beldex-wallet-rpc (feature-confidential-asset build) + optional daemon. */
+export class WalletRpcProvider implements IBeldexProvider {
+  readonly kind = 'wallet-rpc-sidecar' as const;
+  readonly capabilities = FULL_CAPABILITIES;
+  readonly network: Exclude<BeldexNetwork, 'mock-devnet'>;
+  private readonly wallet: WalletRpc;
+  private readonly daemon: DaemonRpc | undefined;
+  private readonly bns: BnsResolver | null;
+  private readonly inspect: ((txHash: string) => Promise<TxInspection | null>) | null;
+  private readonly decimalsCache = new Map<string, number>([[NATIVE_TOKEN_ID, BDX_DECIMALS]]);
+
+  constructor(private readonly options: WalletRpcProviderOptions) {
+    this.wallet = options.wallet;
+    this.daemon = options.daemon;
+    this.network = options.network;
+    this.bns = options.daemon ? new BnsResolver(createRpcBnsBackend(options.daemon, options.wallet), { network: options.network }) : null;
+    this.inspect = options.daemon
+      ? createDaemonTxInspector(options.daemon)
+      : options.explorerApiUrl
+        ? createExplorerTxInspector(options.explorerApiUrl)
+        : null;
+  }
+
+  async connectWallet(): Promise<WalletConnection> {
+    const { address } = await this.wallet.getAddress();
+    return { address, network: this.network };
+  }
+
+  async getBalances(): Promise<Record<string, string>> {
+    const balance = await this.wallet.getBalance();
+    const result: Record<string, string> = {
+      [NATIVE_TOKEN_ID]: formatUnits(toBigIntAmount(balance.balance), BDX_DECIMALS),
+    };
+    for (const entry of balance.asset_balances ?? []) {
+      const decimals = await this.decimals(entry.asset_id);
+      result[entry.asset_id] = formatUnits(toBigIntAmount(entry.balance), decimals);
+    }
+    return result;
+  }
+
+  resolveBNS(domain: string): Promise<BNSResolution> {
+    if (!this.bns) throw new ValidationError('BNS resolution needs BELDEX_DAEMON_RPC_URL.');
+    return this.bns.resolve(domain);
+  }
+
+  async mintPrivacyToken(params: Omit<PrivacyTokenMetadata, 'tokenId' | 'isNativeBdx'>): Promise<PrivacyTokenMetadata> {
+    if (!this.options.writeAssetDescriptor) throw new UnsupportedCapabilityError('assets', this.kind);
+    const supply = parseUnits(params.totalSupply ?? '0', params.decimals);
+    const { path, cleanup } = await this.options.writeAssetDescriptor({
+      ticker: params.ticker,
+      full_name: params.name,
+      total_max_supply: supply,
+      current_supply: supply,
+      decimal_point: params.decimals,
+      hidden_supply: false,
+      meta_info: '',
+    });
+    try {
+      const deployed = await this.wallet.deployNewAsset(path, PRIORITY_NORMAL);
+      this.decimalsCache.set(deployed.asset_id, params.decimals);
+      return {
+        tokenId: deployed.asset_id,
+        ticker: deployed.ticker ?? params.ticker,
+        name: deployed.full_name ?? params.name,
+        decimals: params.decimals,
+        totalSupply: formatUnits(supply, params.decimals),
+        isNativeBdx: false,
+      };
+    } finally {
+      await cleanup();
+    }
+  }
+
+  async sendBatchChunk(recipients: BatchPaymentRecipient[], useFlashTx: boolean): Promise<ConfidentialTxPart[]> {
+    const tokenId = recipients[0]?.tokenId ?? NATIVE_TOKEN_ID;
+    if (recipients.some((recipient) => recipient.tokenId !== tokenId)) {
+      throw new ValidationError('A chunk must contain a single asset.');
+    }
+    const decimals = await this.decimals(tokenId);
+    const destinations: TransferDestination[] = recipients.map((recipient) => ({
+      address: recipient.resolvedAddress,
+      amount: parseUnits(recipient.amount, decimals),
+      ...(tokenId === NATIVE_TOKEN_ID ? {} : { asset_id: tokenId }),
+    }));
+    const priority = useFlashTx ? PRIORITY_FLASH : PRIORITY_NORMAL;
+    const ids = recipients.map((recipient) => recipient.id);
+
+    try {
+      const result = await this.wallet.transfer(destinations, priority);
+      const fee = toBigIntAmount(result.fee);
+      return [this.part(result.tx_hash, result.tx_key ?? '', fee, ids, useFlashTx)];
+    } catch (error) {
+      if (!(error instanceof RpcError) || !TOO_LARGE.test(error.message)) throw translateTransferError(error, tokenId);
+    }
+
+    try {
+      const split = await this.wallet.transferSplit(destinations, priority);
+      const parts = split.tx_hash_list.map((txHash, index) =>
+        this.part(txHash, split.tx_key_list?.[index] ?? '', toBigIntAmount(split.fee_list?.[index]), [], useFlashTx),
+      );
+      return this.attributeSplit(parts, recipients);
+    } catch (error) {
+      throw translateTransferError(error, tokenId);
+    }
+  }
+
+  async sendConfidentialBatch(recipients: BatchPaymentRecipient[], useFlashTx: boolean): Promise<ConfidentialTxResult> {
+    const parts = await executeBatch(recipients, useFlashTx, (chunk, flash) => this.sendBatchChunk(chunk, flash));
+    return summarizeBatch(parts, recipients.length);
+  }
+
+  async verifySelectiveAuditProof(txHash: string, txKey: string, recipientAddress: string): Promise<VerificationResult> {
+    const check = await this.wallet.checkTxKey(txHash, txKey, recipientAddress);
+    const received = toBigIntAmount(check.received);
+    const confirmations = Number(check.confirmations);
+    const height = await this.currentHeight();
+    return {
+      isValid: received > 0n && !check.in_pool,
+      confirmedAmount: formatUnits(received, BDX_DECIMALS),
+      confirmedAmountAtomic: received.toString(),
+      blockHeight: check.in_pool || height === null ? 0 : height - confirmations,
+      inPool: check.in_pool,
+      confirmations,
+    };
+  }
+
+  verificationSources(): VerificationSources {
+    return {
+      checkTxKey: async (txHash, txKey, address) => {
+        const check = await this.wallet.checkTxKey(txHash, txKey, address);
+        const confirmations = Number(check.confirmations);
+        const height = check.in_pool ? null : await this.currentHeight();
+        return {
+          receivedAtomic: toBigIntAmount(check.received),
+          inPool: check.in_pool,
+          confirmations,
+          blockHeight: height === null ? null : height - confirmations,
+          ...(check.asset_id !== undefined ? { assetId: check.asset_id || NATIVE_TOKEN_ID } : {}),
+        };
+      },
+      receiverTransfers: async (txHash, address) => {
+        const found = await this.wallet.getTransferByTxid(txHash);
+        const entries = found.transfers ?? (found.transfer ? [found.transfer] : []);
+        return entries
+          .filter((entry) => entry.type === 'in' || entry.type === 'pool' || entry.type === undefined)
+          .filter((entry) => entry.address === undefined || entry.address === address)
+          .map((entry) => ({
+            ...(entry.asset_id !== undefined ? { assetId: entry.asset_id || NATIVE_TOKEN_ID } : {}),
+            amountAtomic: toBigIntAmount(entry.amount),
+          }));
+      },
+      ...(this.inspect ? { inspectTx: this.inspect } : {}),
+      verifySignature: async (message, address, signature) => (await this.wallet.verify(message, address, signature)).good,
+    };
+  }
+
+  async signMessage(message: string): Promise<{ signature: string; address: string }> {
+    const [{ signature }, { address }] = await Promise.all([this.wallet.sign(message), this.wallet.getAddress()]);
+    return { signature, address };
+  }
+
+  async getTxKey(txHash: string): Promise<string> {
+    return (await this.wallet.getTxKey(txHash)).tx_key;
+  }
+
+  private part(txHash: string, txKey: string, fee: bigint, recipientIds: string[], flash: boolean): ConfidentialTxPart {
+    return {
+      txHash,
+      txKey,
+      feeAtomic: fee.toString(),
+      burnedAtomic: estimatedBurn(fee, flash).toString(),
+      recipientIds,
+      inPool: true,
+      blockHeight: null,
+    };
+  }
+
+  /** transfer_split does not say which destination landed in which tx: ask check_tx_key. */
+  private async attributeSplit(parts: ConfidentialTxPart[], recipients: BatchPaymentRecipient[]): Promise<ConfidentialTxPart[]> {
+    if (parts.length === 1 && parts[0]) return [{ ...parts[0], recipientIds: recipients.map((r) => r.id) }];
+    const attributed = parts.map((part) => ({ ...part, recipientIds: [] as string[] }));
+    for (const recipient of recipients) {
+      for (const part of attributed) {
+        const check = await this.wallet.checkTxKey(part.txHash, part.txKey, recipient.resolvedAddress);
+        if (toBigIntAmount(check.received) > 0n) {
+          part.recipientIds.push(recipient.id);
+          break;
+        }
+      }
+    }
+    return attributed;
+  }
+
+  private async currentHeight(): Promise<number | null> {
+    try {
+      return this.daemon ? (await this.daemon.getInfo()).height : (await this.wallet.getHeight()).height;
+    } catch {
+      return null;
+    }
+  }
+
+  private async decimals(tokenId: string): Promise<number> {
+    const cached = this.decimalsCache.get(tokenId);
+    if (cached !== undefined) return cached;
+    const owned = await this.wallet.getOwnedAssets().catch(() => ({ assets: [] }));
+    for (const asset of owned.assets ?? []) {
+      if (asset.decimal_point !== undefined) this.decimalsCache.set(asset.asset_id, asset.decimal_point);
+    }
+    const decimals = this.decimalsCache.get(tokenId) ?? (await this.options.decimalsFor?.(tokenId));
+    if (decimals === undefined) throw new ValidationError(`Unknown decimals for asset ${tokenId}.`);
+    this.decimalsCache.set(tokenId, decimals);
+    return decimals;
+  }
+}
