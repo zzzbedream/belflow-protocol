@@ -1,6 +1,6 @@
 'use client';
 
-import { Bot, Coins, Eye, EyeOff, FileText, Landmark, ShieldCheck, Users } from 'lucide-react';
+import { Bot, Coins, Droplets, Eye, EyeOff, FileText, Landmark, ShieldCheck, Users } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import type { ReactNode } from 'react';
@@ -15,6 +15,7 @@ const NAV = [
   { href: '/invoices', label: 'Invoices', icon: FileText },
   { href: '/compliance', label: 'Compliance', icon: ShieldCheck },
   { href: '/x402-agents', label: 'x402 Agents', icon: Bot },
+  { href: '/faucet', label: 'Faucet', icon: Droplets },
 ] as const;
 
 const NETWORKS: Array<{ id: AppNetwork; label: string }> = [

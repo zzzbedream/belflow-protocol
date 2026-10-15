@@ -38,5 +38,7 @@ export async function sweepExpired(now = Date.now()): Promise<void> {
     db.x402PaymentNonce.deleteMany({ where: { isConsumed: false, expiresAt: { lt: cutoff } } }),
     db.authChallenge.deleteMany({ where: { expiresAt: { lt: cutoff } } }),
     db.revokedSession.deleteMany({ where: { expiresAt: { lt: new Date(now) } } }),
+    // Faucet rows (and their IP HMACs) only live as long as the 24 h window.
+    db.faucetClaim.deleteMany({ where: { createdAt: { lt: new Date(now - 24 * 60 * 60 * 1000) } } }),
   ]);
 }

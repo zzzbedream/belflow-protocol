@@ -38,6 +38,8 @@ export interface NetworkRuntime {
   /** Mines blocks on the mock chain; undefined on real networks. */
   advanceBlocks?: (count: number) => Promise<number>;
   chainHeight: () => Promise<number>;
+  /** Testnet faucet: a dedicated wallet account (only when BELFLOW_FAUCET_ENABLED). */
+  faucet?: { provider: FullProvider; wallet: WalletRpc; accountIndex: number };
 }
 
 const RPC_TIMEOUT_MS = 120_000;
@@ -100,6 +102,20 @@ async function buildTestnet(env: ServerEnv): Promise<NetworkRuntime> {
     bns: new BnsResolver(bnsBackend, { network: 'testnet' }),
     verification: provider.verificationSources(),
     chainHeight: async () => (daemon ? (await daemon.getInfo()).height : (await wallet.getHeight()).height),
+    ...(env.BELFLOW_FAUCET_ENABLED
+      ? {
+          faucet: {
+            provider: new WalletRpcProvider({
+              wallet,
+              network: 'testnet',
+              accountIndex: env.BELFLOW_FAUCET_ACCOUNT_INDEX,
+              ...(daemon ? { daemon } : { explorerApiUrl: env.BELDEX_EXPLORER_API_URL }),
+            }),
+            wallet,
+            accountIndex: env.BELFLOW_FAUCET_ACCOUNT_INDEX,
+          },
+        }
+      : {}),
   };
 }
 

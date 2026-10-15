@@ -125,6 +125,21 @@ model PayrollTxRecord {
   @@index([jobId])
 }
 
+/// Evaluator faucet claims. ipHash = HMAC-SHA256(SESSION_SECRET, clientIp):
+/// not reversible without the server secret. Rows are swept after 24 h.
+model FaucetClaim {
+  id           String   @id @default(cuid())
+  network      String
+  recipient    String
+  ipHash       String
+  status       String   @default("PENDING") // PENDING | SENT | PARTIAL
+  txHashesJson String   @default("[]")
+  createdAt    DateTime @default(now())
+
+  @@index([network, recipient, createdAt])
+  @@index([network, ipHash, createdAt])
+}
+
 /// Single-use login challenges (wallet signature over a server nonce).
 model AuthChallenge {
   nonce      String   @id

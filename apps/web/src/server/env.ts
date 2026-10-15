@@ -30,6 +30,11 @@ const schema = z.object({
     .default('false')
     .transform((value) => value === 'true'),
   TREASURY_OPERATOR_ADDRESS: optionalText,
+  BELFLOW_FAUCET_ENABLED: z
+    .string()
+    .default('false')
+    .transform((value) => value === 'true'),
+  BELFLOW_FAUCET_ACCOUNT_INDEX: z.coerce.number().int().min(0).max(1000).default(1),
   X402_PRICE: z.string().regex(/^\d+(\.\d+)?$/).default('0.50'),
   X402_TOKEN_TICKER: z.string().min(2).max(12).default('bUSD'),
   X402_RECIPIENT_BNS: z.string().default('oracle-provider.bdx'),
