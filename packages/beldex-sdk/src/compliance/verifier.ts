@@ -1,5 +1,55 @@
+import { BDX_DECIMALS, NATIVE_TOKEN_ID } from '../constants';
+import { ValidationError } from '../errors';
+import { formatUnits } from '../units';
 import { buildPaymentDeclaration } from './declaration';
-import type { AssetVerificationLevel, TxKeyCheck } from '../types';
+import type { AssetVerificationLevel, TxKeyCheck, VerificationResult } from '../types';
+
+/** "BDX" stays as is; asset ids are compared lowercase. */
+export function normalizeAssetId(assetId: string): string {
+  return assetId.toUpperCase() === NATIVE_TOKEN_ID ? NATIVE_TOKEN_ID : assetId.toLowerCase();
+}
+
+/**
+ * PRD-compatible `verifySelectiveAuditProof` result. Without an expected asset
+ * and amount the payment cannot be judged, so it is reported invalid with the
+ * raw received amount for display only.
+ */
+export async function verifyForProvider(
+  sources: VerificationSources,
+  txHash: string,
+  txKey: string,
+  recipientAddress: string,
+  expected?: { assetId: string; amountAtomic: bigint; decimals: number; issuer?: { address: string; signature: string } },
+): Promise<VerificationResult> {
+  if (!expected) {
+    const check = await sources.checkTxKey(txHash, txKey, recipientAddress);
+    return {
+      isValid: false,
+      confirmedAmount: formatUnits(check.receivedAtomic, BDX_DECIMALS),
+      confirmedAmountAtomic: check.receivedAtomic.toString(),
+      blockHeight: check.blockHeight ?? 0,
+      inPool: check.inPool,
+      confirmations: check.confirmations,
+      assetVerificationLevel: null,
+      failures: ['ASSET_UNVERIFIABLE'],
+    };
+  }
+  const result = await verifyPayment(
+    { txHash, txKey, recipientAddress, assetId: expected.assetId, amountAtomic: expected.amountAtomic },
+    sources,
+    { amountMatch: 'exact', ...(expected.issuer ? { issuer: expected.issuer } : {}) },
+  );
+  return {
+    isValid: result.isValid,
+    confirmedAmount: formatUnits(result.receivedAtomic, expected.decimals),
+    confirmedAmountAtomic: result.receivedAtomic.toString(),
+    blockHeight: result.blockHeight ?? 0,
+    inPool: result.inPool,
+    confirmations: result.confirmations,
+    assetVerificationLevel: result.assetVerificationLevel,
+    failures: result.failures,
+  };
+}
 
 /** What the payer claims was paid. */
 export interface PaymentClaim {
@@ -88,16 +138,19 @@ async function attempt<T>(label: string, notes: string[], run: () => Promise<T>)
  * (ISSUER_SIGNED_DECLARATION). Any contradiction invalidates the payment.
  */
 export async function verifyPayment(
-  claim: PaymentClaim,
+  rawClaim: PaymentClaim,
   sources: VerificationSources,
   options: VerifyPaymentOptions,
 ): Promise<PaymentVerification> {
+  if (rawClaim.amountAtomic <= 0n) throw new ValidationError('Claimed amount must be positive.');
+  const claim = { ...rawClaim, assetId: normalizeAssetId(rawClaim.assetId), txHash: rawClaim.txHash.toLowerCase() };
   const failures: VerificationFailure[] = [];
   const notes: string[] = [];
   let level: AssetVerificationLevel | null = null;
 
   // Layer A: amount and recipient.
-  const check = await sources.checkTxKey(claim.txHash, claim.txKey, claim.recipientAddress);
+  const rawCheck = await sources.checkTxKey(claim.txHash, claim.txKey, claim.recipientAddress);
+  const check = rawCheck.assetId === undefined ? rawCheck : { ...rawCheck, assetId: normalizeAssetId(rawCheck.assetId) };
   if (check.receivedAtomic === 0n) failures.push('NO_OUTPUT_FOR_RECIPIENT');
   else if (options.amountMatch === 'exact' && check.receivedAtomic !== claim.amountAtomic) failures.push('AMOUNT_MISMATCH');
   else if (options.amountMatch === 'at-least' && check.receivedAtomic < claim.amountAtomic) failures.push('AMOUNT_INSUFFICIENT');
@@ -113,7 +166,9 @@ export async function verifyPayment(
     : null;
   const attributed = (incoming ?? []).filter((entry) => entry.assetId !== undefined);
   if (attributed.length > 0) {
-    if (attributed.every((entry) => entry.assetId === claim.assetId)) level = strongest(level, 'CRYPTOGRAPHIC_FULL');
+    if (attributed.every((entry) => normalizeAssetId(entry.assetId as string) === claim.assetId)) {
+      level = strongest(level, 'CRYPTOGRAPHIC_FULL');
+    }
     else failures.push('ASSET_MISMATCH');
   }
 
@@ -122,7 +177,7 @@ export async function verifyPayment(
     ? await attempt('get_transactions', notes, () => sources.inspectTx!(claim.txHash))
     : null;
   if (inspection?.assetIds) {
-    const assets = [...new Set(inspection.assetIds)];
+    const assets = [...new Set(inspection.assetIds.map(normalizeAssetId))];
     if (!assets.includes(claim.assetId)) failures.push('ASSET_MISMATCH');
     else if (assets.length === 1) level = strongest(level, 'DAEMON_EXTRACTED');
     else notes.push('Transaction carries several assets; daemon tags cannot attribute this output.');

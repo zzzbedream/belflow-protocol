@@ -27,12 +27,23 @@ function collect(node: unknown, depth: number, found: string[]): void {
   }
 }
 
-/** Asset ids found in the outputs of a decoded tx, or null when the format exposes none. */
+/**
+ * Asset ids of a decoded tx, or null unless EVERY output carries exactly one
+ * asset tag. Partial tagging (e.g. untagged native outputs next to a tagged
+ * dust token output) must never be read as attribution: an attacker could pay
+ * BDX to the recipient and add a token output elsewhere.
+ */
 export function extractAssetIds(decodedTx: unknown): string[] | null {
-  const found: string[] = [];
   const outputs = (decodedTx as { vout?: unknown } | null)?.vout;
-  collect(outputs ?? decodedTx, 0, found);
-  return found.length > 0 ? [...new Set(found)] : null;
+  if (!Array.isArray(outputs) || outputs.length === 0) return null;
+  const perOutput: string[] = [];
+  for (const output of outputs) {
+    const found: string[] = [];
+    collect(output, 0, found);
+    if (found.length !== 1) return null;
+    perOutput.push(found[0] as string);
+  }
+  return [...new Set(perOutput)];
 }
 
 /** Builds an inspection from a daemon get_transactions entry or an explorer tx object. */

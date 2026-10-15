@@ -69,6 +69,12 @@ describe('json helpers', () => {
     expect(toBigIntAmount(undefined)).toBe(0n);
     expect(() => toBigIntAmount(2 ** 60)).toThrow(RangeError);
     expect(() => toBigIntAmount('1.5')).toThrow(RangeError);
+    // Large integers inside string values (daemon as_json) must stay untouched.
+    const raw = '{"as_json":"{\\"amount\\": 4000000000000000}","fee":12345678901234567}';
+    const nested = parseJsonSafe<{ as_json: string; fee: string }>(raw);
+    expect(JSON.parse(nested.as_json).amount).toBe(4000000000000000);
+    expect(nested.fee).toBe('12345678901234567');
+    expect(parseJsonSafe<Array<number | string>>('[1.5e3, -12345678901234567]')).toEqual([1500, '-12345678901234567']);
   });
 });
 

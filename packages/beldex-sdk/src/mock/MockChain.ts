@@ -39,6 +39,11 @@ export interface MockBalance {
 
 const GENESIS_TIMESTAMP = 1_790_000_000;
 const BLOCK_TIME_SECONDS = 30;
+/** Own-property lookup: plain-object maps must never resolve "__proto__" or "constructor". */
+function own<T>(record: Record<string, T>, key: string): T | undefined {
+  return Object.hasOwn(record, key) ? record[key] : undefined;
+}
+
 const DEFAULT_SEED = 'belflow-mock-devnet';
 const DEFAULT_START_HEIGHT = 4_250_000;
 const SIGNATURE_PREFIX = 'MockSigV1';
@@ -88,7 +93,7 @@ export class MockChain {
       spendPublicKey: digestHex(this.state.seed, 'spend', label),
       viewPublicKey: digestHex(this.state.seed, 'view', label),
     });
-    const existing = this.state.accounts[address];
+    const existing = own(this.state.accounts, address);
     if (!existing || existing.label === 'external') {
       const account: MockAccount = { label, utxos: existing?.utxos ?? {} };
       this.state = { ...this.state, accounts: { ...this.state.accounts, [address]: account } };
@@ -97,11 +102,11 @@ export class MockChain {
   }
 
   hasAccount(address: string): boolean {
-    return this.state.accounts[address] !== undefined;
+    return own(this.state.accounts, address) !== undefined;
   }
 
   getBalances(address: string): Record<string, MockBalance> {
-    const account = this.state.accounts[address];
+    const account = own(this.state.accounts, address);
     if (!account) return { [NATIVE_TOKEN_ID]: { total: 0n, unlocked: 0n } };
     const result: Record<string, MockBalance> = { [NATIVE_TOKEN_ID]: { total: 0n, unlocked: 0n } };
     for (const [tokenId, utxos] of Object.entries(account.utxos)) {
@@ -113,7 +118,7 @@ export class MockChain {
   faucet(address: string, amount: bigint): MockTx {
     decodeAddress(address);
     const account = this.accountOrExternal(address);
-    const updated = this.withUtxos(account, NATIVE_TOKEN_ID, credit(account.utxos[NATIVE_TOKEN_ID] ?? [], amount, 0));
+    const updated = this.withUtxos(account, NATIVE_TOKEN_ID, credit(own(account.utxos, NATIVE_TOKEN_ID) ?? [], amount, 0));
     const tx = this.buildTx({
       kind: 'faucet',
       from: 'faucet',
@@ -135,7 +140,7 @@ export class MockChain {
   }
 
   resolveBns(name: string): string | null {
-    return this.state.bns[name.toLowerCase()] ?? null;
+    return own(this.state.bns, name.toLowerCase()) ?? null;
   }
 
   // ----------------------------------------------------------------- assets
@@ -145,7 +150,7 @@ export class MockChain {
   }
 
   getAsset(assetId: string): MockAsset | null {
-    return this.state.assets[assetId] ?? null;
+    return own(this.state.assets, assetId) ?? null;
   }
 
   deployAsset(
@@ -191,7 +196,7 @@ export class MockChain {
     for (const output of outputs) {
       decodeAddress(output.address);
       if (output.amount <= 0n) throw new ValidationError('Output amounts must be positive.');
-      if (output.assetId !== NATIVE_TOKEN_ID && !this.state.assets[output.assetId]) {
+      if (output.assetId !== NATIVE_TOKEN_ID && !own(this.state.assets, output.assetId)) {
         throw new ValidationError(`Unknown asset ${output.assetId}.`);
       }
     }
@@ -232,7 +237,7 @@ export class MockChain {
   }
 
   getTransaction(txHash: string): MockTxView | null {
-    const tx = this.state.txs[txHash];
+    const tx = own(this.state.txs, txHash);
     if (!tx) return null;
     return {
       txHash,
@@ -248,7 +253,7 @@ export class MockChain {
 
   /** What the receiving wallet sees for an incoming tx (get_transfer_by_txid). */
   getIncomingTransfers(txHash: string, address: string): Array<{ assetId: string; amount: bigint }> {
-    const tx = this.state.txs[txHash];
+    const tx = own(this.state.txs, txHash);
     if (!tx) return [];
     return tx.outputs
       .filter((output) => output.address === address)
@@ -256,7 +261,8 @@ export class MockChain {
   }
 
   sign(address: string, message: string): string {
-    if (!this.state.accounts[address] || this.state.accounts[address]?.label === 'external') {
+    const account = own(this.state.accounts, address);
+    if (!account || account.label === 'external') {
       throw new ValidationError('This mock chain does not hold the keys for that address.');
     }
     return `${SIGNATURE_PREFIX}${hmacHex(digestHex(this.state.seed, 'sign', address), message)}`;
@@ -276,7 +282,7 @@ export class MockChain {
     flash: boolean,
     options: { kind: 'transfer' | 'deploy'; mint?: MockTransferOutput },
   ): MockTx {
-    const sender = this.state.accounts[from];
+    const sender = own(this.state.accounts, from);
     if (!sender || sender.label === 'external') throw new ValidationError('Unknown sender account.');
 
     const outputCount = outputs.length + (options.mint ? 1 : 0) + 1;
@@ -289,7 +295,7 @@ export class MockChain {
 
     let senderAfter: MockAccount = sender;
     for (const [tokenId, needed] of needs) {
-      const utxos = spend({ utxos: senderAfter.utxos[tokenId] ?? [], needed, height: this.state.height, changeUnlockHeight: unlockHeight, tokenId });
+      const utxos = spend({ utxos: own(senderAfter.utxos, tokenId) ?? [], needed, height: this.state.height, changeUnlockHeight: unlockHeight, tokenId });
       senderAfter = this.withUtxos(senderAfter, tokenId, utxos);
     }
 
@@ -300,7 +306,7 @@ export class MockChain {
       updates[output.address] = this.withUtxos(
         current,
         output.assetId,
-        credit(current.utxos[output.assetId] ?? [], output.amount, unlockHeight),
+        credit(own(current.utxos, output.assetId) ?? [], output.amount, unlockHeight),
       );
     }
 
@@ -315,7 +321,7 @@ export class MockChain {
     });
     this.commit(updates, tx, true);
     if (this.autoMine && !flash) this.mineBlocks(1);
-    return this.state.txs[tx.txHash] as MockTx;
+    return own(this.state.txs, tx.txHash) as MockTx;
   }
 
   private buildTx(params: {
@@ -353,7 +359,7 @@ export class MockChain {
   }
 
   private accountOrExternal(address: string): MockAccount {
-    return this.state.accounts[address] ?? { label: 'external', utxos: {} };
+    return own(this.state.accounts, address) ?? { label: 'external', utxos: {} };
   }
 
   private withUtxos(account: MockAccount, tokenId: string, utxos: MockAccount['utxos'][string]): MockAccount {
@@ -361,7 +367,7 @@ export class MockChain {
   }
 
   private requireTx(txHash: string): MockTx {
-    const tx = this.state.txs[txHash];
+    const tx = own(this.state.txs, txHash);
     if (!tx) throw new ValidationError('Transaction not found on the mock chain.');
     return tx;
   }

@@ -45,6 +45,16 @@ export class FundsLockedError extends BelflowError {
   }
 }
 
+/**
+ * A spend request timed out or the connection dropped after it was sent: the
+ * wallet may have broadcast it. Never retry blindly; reconcile first.
+ */
+export class OutcomeUnknownError extends BelflowError {
+  constructor(operation: string) {
+    super(`${operation}: outcome unknown, the transaction may have been broadcast. Reconcile before retrying.`, 'OUTCOME_UNKNOWN');
+  }
+}
+
 export class BnsResolutionError extends BelflowError {
   constructor(domain: string, reason: string) {
     super(`Could not resolve ${domain}: ${reason}`, 'BNS_RESOLUTION');

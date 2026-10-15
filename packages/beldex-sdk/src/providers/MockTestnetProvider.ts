@@ -1,5 +1,5 @@
 import { BnsResolver } from '../bns/resolver';
-import type { VerificationSources } from '../compliance/verifier';
+import { verifyForProvider, type VerificationSources } from '../compliance/verifier';
 import { BDX_DECIMALS, NATIVE_TOKEN_ID } from '../constants';
 import { ValidationError } from '../errors';
 import type { MockChainApi } from '../mock/api';
@@ -9,6 +9,7 @@ import type {
   BatchPaymentRecipient,
   ConfidentialTxPart,
   ConfidentialTxResult,
+  ExpectedPayment,
   IBeldexProvider,
   PrivacyTokenMetadata,
   VerificationResult,
@@ -131,17 +132,13 @@ export class MockTestnetProvider implements IBeldexProvider {
     return summarizeBatch(parts, recipients.length);
   }
 
-  async verifySelectiveAuditProof(txHash: string, txKey: string, recipientAddress: string): Promise<VerificationResult> {
-    const [check, assets] = await Promise.all([this.api.checkTxKey(txHash, txKey, recipientAddress), this.api.listAssets()]);
-    const received = BigInt(check.receivedAtomic);
-    return {
-      isValid: received > 0n && !check.inPool,
-      confirmedAmount: formatUnits(received, decimalsOf(check.assetId ?? NATIVE_TOKEN_ID, assets)),
-      confirmedAmountAtomic: check.receivedAtomic,
-      blockHeight: check.blockHeight ?? 0,
-      inPool: check.inPool,
-      confirmations: check.confirmations,
-    };
+  verifySelectiveAuditProof(
+    txHash: string,
+    txKey: string,
+    recipientAddress: string,
+    expected?: ExpectedPayment,
+  ): Promise<VerificationResult> {
+    return verifyForProvider(this.verificationSources(), txHash, txKey, recipientAddress, expected);
   }
 
   verificationSources(): VerificationSources {

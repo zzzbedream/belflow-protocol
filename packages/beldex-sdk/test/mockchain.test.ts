@@ -93,6 +93,14 @@ describe('MockChain', () => {
     expect(() => chain.transfer(alice.replace(/.$/, ''), [{ address: treasury, assetId: 'BDX', amount: 1n }], { flash: false })).toThrow();
   });
 
+  it('never resolves prototype keys', () => {
+    expect(chain.hasAccount('constructor')).toBe(false);
+    expect(chain.resolveBns('__proto__')).toBeNull();
+    expect(chain.getAsset('constructor')).toBeNull();
+    expect(chain.getBalances('constructor').BDX?.total).toBe(0n);
+    expect(() => chain.transfer(treasury, [{ address: alice, assetId: 'constructor', amount: 1n }], { flash: false })).toThrow(/Unknown asset/);
+  });
+
   it('signs and verifies only for accounts it holds keys for', () => {
     const signature = chain.sign(treasury, 'hello');
     expect(chain.verify('hello', treasury, signature)).toBe(true);
@@ -184,6 +192,8 @@ describe('mock JSON-RPC bridge', () => {
     expect((await call('mock_transfer', { from: 'a', outputs: [] })).error?.code).toBe(-32602);
     expect((await call('mock_deployAsset', { owner: 'a', params: { decimals: 40 } })).error?.code).toBe(-32602);
     expect((await call('mock_faucet', { address: 'a', amountAtomic: '1.5' })).error?.code).toBe(-32602);
+    const badAsset = await call('mock_transfer', { from: 'a', outputs: [{ address: 'b', assetId: 'constructor', amountAtomic: '1' }] });
+    expect(badAsset.error?.code).toBe(-32602);
     expect((await call('mock_getInfo')).result).toMatchObject({ nettype: 'mock-devnet' });
     expect(MOCK_BRIDGE_METHODS).not.toContain('mock_sign');
   });

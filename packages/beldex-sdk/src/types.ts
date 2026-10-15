@@ -70,6 +70,8 @@ export interface ConfidentialTxPart {
   recipientIds: string[];
   inPool: boolean;
   blockHeight?: number | null;
+  /** Some recipients of a split transfer could not be matched to a tx; reconcile manually. */
+  needsReconciliation?: boolean;
 }
 
 export interface ConfidentialTxResult {
@@ -149,6 +151,13 @@ export interface VerificationResult {
   failures?: string[];
 }
 
+export interface ExpectedPayment {
+  assetId: string;
+  amountAtomic: bigint;
+  decimals: number;
+  issuer?: { address: string; signature: string };
+}
+
 export interface WalletConnection {
   address: string;
   network: BeldexNetwork;
@@ -170,10 +179,15 @@ export interface IBeldexProvider {
     recipients: BatchPaymentRecipient[],
     useFlashTx: boolean,
   ): Promise<ConfidentialTxResult>;
+  /**
+   * Without `expected` the result is always invalid (asset and amount unknown);
+   * with it, full dual verification runs. See compliance/verifier.ts.
+   */
   verifySelectiveAuditProof(
     txHash: string,
     txKey: string,
     recipientAddress: string,
+    expected?: ExpectedPayment,
   ): Promise<VerificationResult>;
   /** Sign a single-line message (no control characters, ≤ 512 chars). */
   signMessage?(message: string): Promise<{ signature: string; address: string }>;

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { encodeAddress } from '../src/address/address';
 import { BnsResolver, createRpcBnsBackend, hashBnsName, isBnsName } from '../src/bns/resolver';
 import { verifyPayment } from '../src/compliance/verifier';
-import { FundsLockedError, InsufficientFundsError, UnsupportedCapabilityError, ValidationError } from '../src/errors';
+import { FundsLockedError, InsufficientFundsError, OutcomeUnknownError, UnsupportedCapabilityError, ValidationError } from '../src/errors';
 import { LocalMockChainApi } from '../src/mock/api';
 import { MockChain } from '../src/mock/MockChain';
 import { PartialBatchError, executeBatch } from '../src/providers/batch';
@@ -56,8 +56,20 @@ describe('MockTestnetProvider', () => {
     );
     expect(result).toMatchObject({ recipientsCount: 2, ringSize: 10, feeBurnedBdx: '0' });
     expect(result.transactions).toHaveLength(1);
-    const verified = await provider.verifySelectiveAuditProof(result.txHash, result.txKey, ALICE);
-    expect(verified).toMatchObject({ isValid: true, confirmedAmount: '1250.5' });
+    const blind = await provider.verifySelectiveAuditProof(result.txHash, result.txKey, ALICE);
+    expect(blind).toMatchObject({ isValid: false, failures: ['ASSET_UNVERIFIABLE'] });
+    const verified = await provider.verifySelectiveAuditProof(result.txHash, result.txKey, ALICE, {
+      assetId: token.tokenId,
+      amountAtomic: 1_250_500_000n,
+      decimals: 6,
+    });
+    expect(verified).toMatchObject({ isValid: true, confirmedAmount: '1250.5', assetVerificationLevel: 'CRYPTOGRAPHIC_FULL' });
+    const wrongAsset = await provider.verifySelectiveAuditProof(result.txHash, result.txKey, ALICE, {
+      assetId: 'BDX',
+      amountAtomic: 1_250_500_000n,
+      decimals: 9,
+    });
+    expect(wrongAsset.failures).toContain('ASSET_MISMATCH');
     expect((await provider.getBalances(ALICE))[token.tokenId]).toBe('1250.5');
 
     const dual = await verifyPayment(
@@ -257,7 +269,7 @@ describe('WalletRpcProvider', () => {
         expect(p.get_tx_keys).toBe(true);
         return { tx_hash_list: [HASH_A, HASH_B], tx_key_list: ['ka', 'kb'], fee_list: [1, 2] };
       },
-      check_tx_key: (p) => ({ received: (p.txid === HASH_A) === (p.address === ALICE) ? 1 : 0, in_pool: true, confirmations: 0 }),
+      check_tx_key: (p) => ({ received: (p.txid === HASH_A) === (p.address === ALICE) ? 1_000_000_000 : 0, in_pool: true, confirmations: 0 }),
     });
     const parts = await provider.sendBatchChunk([recipient('a', ALICE, '1'), recipient('b', BOB, '1')], false);
     expect(parts.map((p) => [p.txHash, p.recipientIds])).toEqual([
@@ -265,6 +277,39 @@ describe('WalletRpcProvider', () => {
       [HASH_B, ['b']],
     ]);
     expect(calls.filter((c) => c === 'transfer_split')).toHaveLength(1);
+    expect(parts.every((p) => !p.needsReconciliation)).toBe(true);
+  });
+
+  it('never loses broadcast split txs when attribution fails', async () => {
+    const { provider } = walletProvider({
+      transfer: () => new RpcFailure(-4, 'tx too big'),
+      transfer_split: () => ({ tx_hash_list: [HASH_A, HASH_B], fee_list: [1, 2] }),
+    });
+    const parts = await provider.sendBatchChunk([recipient('a', ALICE, '1'), recipient('b', BOB, '1')], false);
+    expect(parts.map((p) => p.txHash)).toEqual([HASH_A, HASH_B]);
+    expect(parts.every((p) => p.needsReconciliation)).toBe(true);
+
+    const failingCheck = walletProvider({
+      transfer: () => new RpcFailure(-4, 'tx too big'),
+      transfer_split: () => ({ tx_hash_list: [HASH_A, HASH_B], tx_key_list: ['ka', 'kb'], fee_list: [1, 2] }),
+      check_tx_key: () => new RpcFailure(-1, 'daemon down'),
+    });
+    const flagged = await failingCheck.provider.sendBatchChunk([recipient('a', ALICE, '1')], false);
+    expect(flagged).toHaveLength(2);
+    expect(flagged[0]?.needsReconciliation).toBe(true);
+  });
+
+  it('reports an unknown outcome when a transfer times out', async () => {
+    const wallet = new WalletRpc(
+      new JsonRpcClient({
+        url: 'http://w',
+        fetch: (async () => {
+          throw Object.assign(new Error('t'), { name: 'TimeoutError' });
+        }) as typeof fetch,
+      }),
+    );
+    const provider = new WalletRpcProvider({ wallet, network: 'testnet' });
+    await expect(provider.sendBatchChunk([recipient('a', ALICE, '1')], false)).rejects.toBeInstanceOf(OutcomeUnknownError);
   });
 
   it('translates wallet funding errors', async () => {
@@ -299,7 +344,9 @@ describe('WalletRpcProvider', () => {
       { amountMatch: 'exact' },
     );
     expect(result.assetVerificationLevel).toBe('CRYPTOGRAPHIC_FULL');
-    await expect(provider.verifySelectiveAuditProof(HASH_A, 'k', ALICE)).resolves.toMatchObject({ isValid: true, blockHeight: 100 });
+    await expect(
+      provider.verifySelectiveAuditProof(HASH_A, 'k', ALICE, { assetId: ASSET.toUpperCase(), amountAtomic: 2_000_000n, decimals: 6 }),
+    ).resolves.toMatchObject({ isValid: true, blockHeight: 100, confirmedAmount: '2' });
     await expect(provider.signMessage('m')).resolves.toEqual({ signature: 'SigV1x', address: ALICE });
     await expect(provider.getTxKey(HASH_A)).resolves.toBe('kk');
   });
@@ -343,6 +390,13 @@ describe('ExtensionProvider', () => {
     const result = await provider.sendConfidentialBatch([recipient('inv-1', BOB, '1.5')], true);
     expect(sent[0]).toEqual({ to: BOB, amount: 1_500_000_000n, priority: 5, idempotencyKey: 'inv-1' });
     expect(result).toMatchObject({ txHash: HASH_A, txKey: '' });
+  });
+
+  it('rejects a wallet on the wrong network and foreign recipient addresses', async () => {
+    const mainnet = new ExtensionProvider(client({ connect: async () => ({ address: ALICE, network: 'mainnet' }) }));
+    await expect(mainnet.connectWallet()).rejects.toThrow(/switch it to testnet/);
+    const main = encodeAddress({ network: 'mainnet', kind: 'standard', spendPublicKey: '33'.repeat(32), viewPublicKey: '44'.repeat(32) });
+    await expect(new ExtensionProvider(client()).sendConfidentialBatch([recipient('a', main, '1')], false)).rejects.toThrow(/expected testnet/);
   });
 
   it('refuses what the extension cannot do', async () => {

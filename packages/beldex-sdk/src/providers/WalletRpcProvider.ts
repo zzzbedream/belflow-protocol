@@ -1,8 +1,16 @@
 import { BnsResolver, createRpcBnsBackend } from '../bns/resolver';
 import { createDaemonTxInspector, createExplorerTxInspector } from '../compliance/txInspection';
-import type { TxInspection, VerificationSources } from '../compliance/verifier';
+import { verifyForProvider, type TxInspection, type VerificationSources } from '../compliance/verifier';
 import { BDX_DECIMALS, FLASH_FEE_MULTIPLIER, NATIVE_TOKEN_ID, PRIORITY_FLASH, PRIORITY_NORMAL } from '../constants';
-import { FundsLockedError, InsufficientFundsError, RpcError, UnsupportedCapabilityError, ValidationError } from '../errors';
+import {
+  FundsLockedError,
+  InsufficientFundsError,
+  OutcomeUnknownError,
+  RpcError,
+  RpcTransportError,
+  UnsupportedCapabilityError,
+  ValidationError,
+} from '../errors';
 import type { DaemonRpc } from '../rpc/daemon';
 import { toBigIntAmount } from '../rpc/json';
 import type { TransferDestination, WalletRpc } from '../rpc/wallet';
@@ -12,6 +20,7 @@ import type {
   BeldexNetwork,
   ConfidentialTxPart,
   ConfidentialTxResult,
+  ExpectedPayment,
   IBeldexProvider,
   PrivacyTokenMetadata,
   VerificationResult,
@@ -49,7 +58,8 @@ const TOO_LARGE = /too (big|large)|too many (outputs|destinations)|would be too 
 const NOT_ENOUGH_UNLOCKED = /not enough unlocked/i;
 const NOT_ENOUGH_MONEY = /not enough (money|funds)/i;
 
-function translateTransferError(error: unknown, tokenId: string): unknown {
+function translateTransferError(error: unknown, tokenId: string, operation: string): unknown {
+  if (error instanceof RpcTransportError) return new OutcomeUnknownError(operation);
   if (!(error instanceof RpcError)) return error;
   if (NOT_ENOUGH_UNLOCKED.test(error.message)) return new FundsLockedError(tokenId, -1);
   if (NOT_ENOUGH_MONEY.test(error.message)) return new InsufficientFundsError(tokenId);
@@ -153,18 +163,20 @@ export class WalletRpcProvider implements IBeldexProvider {
       const fee = toBigIntAmount(result.fee);
       return [this.part(result.tx_hash, result.tx_key ?? '', fee, ids, useFlashTx)];
     } catch (error) {
-      if (!(error instanceof RpcError) || !TOO_LARGE.test(error.message)) throw translateTransferError(error, tokenId);
+      if (!(error instanceof RpcError) || !TOO_LARGE.test(error.message)) throw translateTransferError(error, tokenId, 'transfer');
     }
 
+    let split;
     try {
-      const split = await this.wallet.transferSplit(destinations, priority);
-      const parts = split.tx_hash_list.map((txHash, index) =>
-        this.part(txHash, split.tx_key_list?.[index] ?? '', toBigIntAmount(split.fee_list?.[index]), [], useFlashTx),
-      );
-      return this.attributeSplit(parts, recipients);
+      split = await this.wallet.transferSplit(destinations, priority);
     } catch (error) {
-      throw translateTransferError(error, tokenId);
+      throw translateTransferError(error, tokenId, 'transfer_split');
     }
+    // Broadcast already happened: from here on nothing may throw and lose the tx hashes.
+    const parts = split.tx_hash_list.map((txHash, index) =>
+      this.part(txHash, split.tx_key_list?.[index] ?? '', toBigIntAmount(split.fee_list?.[index]), [], useFlashTx),
+    );
+    return this.attributeSplit(parts, recipients, destinations);
   }
 
   async sendConfidentialBatch(recipients: BatchPaymentRecipient[], useFlashTx: boolean): Promise<ConfidentialTxResult> {
@@ -172,19 +184,13 @@ export class WalletRpcProvider implements IBeldexProvider {
     return summarizeBatch(parts, recipients.length);
   }
 
-  async verifySelectiveAuditProof(txHash: string, txKey: string, recipientAddress: string): Promise<VerificationResult> {
-    const check = await this.wallet.checkTxKey(txHash, txKey, recipientAddress);
-    const received = toBigIntAmount(check.received);
-    const confirmations = Number(check.confirmations);
-    const height = await this.currentHeight();
-    return {
-      isValid: received > 0n && !check.in_pool,
-      confirmedAmount: formatUnits(received, BDX_DECIMALS),
-      confirmedAmountAtomic: received.toString(),
-      blockHeight: check.in_pool || height === null ? 0 : height - confirmations,
-      inPool: check.in_pool,
-      confirmations,
-    };
+  verifySelectiveAuditProof(
+    txHash: string,
+    txKey: string,
+    recipientAddress: string,
+    expected?: ExpectedPayment,
+  ): Promise<VerificationResult> {
+    return verifyForProvider(this.verificationSources(), txHash, txKey, recipientAddress, expected);
   }
 
   verificationSources(): VerificationSources {
@@ -238,20 +244,48 @@ export class WalletRpcProvider implements IBeldexProvider {
     };
   }
 
-  /** transfer_split does not say which destination landed in which tx: ask check_tx_key. */
-  private async attributeSplit(parts: ConfidentialTxPart[], recipients: BatchPaymentRecipient[]): Promise<ConfidentialTxPart[]> {
+  /**
+   * transfer_split does not say which destination landed in which tx. Each
+   * part's received amount per address is read with check_tx_key and
+   * recipients are matched by remaining amount. Never throws: anything that
+   * cannot be matched marks the parts for manual reconciliation.
+   */
+  private async attributeSplit(
+    parts: ConfidentialTxPart[],
+    recipients: BatchPaymentRecipient[],
+    destinations: TransferDestination[],
+  ): Promise<ConfidentialTxPart[]> {
     if (parts.length === 1 && parts[0]) return [{ ...parts[0], recipientIds: recipients.map((r) => r.id) }];
-    const attributed = parts.map((part) => ({ ...part, recipientIds: [] as string[] }));
-    for (const recipient of recipients) {
-      for (const part of attributed) {
-        const check = await this.wallet.checkTxKey(part.txHash, part.txKey, recipient.resolvedAddress);
-        if (toBigIntAmount(check.received) > 0n) {
-          part.recipientIds.push(recipient.id);
-          break;
+    const assigned = new Map<string, string[]>(parts.map((part) => [part.txHash, []]));
+    let complete = true;
+    try {
+      const remaining = new Map<string, bigint>();
+      for (const part of parts) {
+        for (const address of new Set(destinations.map((d) => d.address))) {
+          if (!part.txKey) continue;
+          const check = await this.wallet.checkTxKey(part.txHash, part.txKey, address);
+          remaining.set(`${part.txHash}:${address}`, toBigIntAmount(check.received));
         }
       }
+      recipients.forEach((recipient, index) => {
+        const amount = destinations[index]?.amount ?? 0n;
+        const part = parts.find((p) => (remaining.get(`${p.txHash}:${recipient.resolvedAddress}`) ?? 0n) >= amount);
+        if (!part) {
+          complete = false;
+          return;
+        }
+        const key = `${part.txHash}:${recipient.resolvedAddress}`;
+        remaining.set(key, (remaining.get(key) ?? 0n) - amount);
+        assigned.get(part.txHash)?.push(recipient.id);
+      });
+    } catch {
+      complete = false;
     }
-    return attributed;
+    return parts.map((part) => ({
+      ...part,
+      recipientIds: assigned.get(part.txHash) ?? [],
+      ...(complete ? {} : { needsReconciliation: true }),
+    }));
   }
 
   private async currentHeight(): Promise<number | null> {

@@ -101,6 +101,14 @@ describe('verifyPayment (dual verification)', () => {
     expect(wallet.failures).toContain('ASSET_MISMATCH');
   });
 
+  it('normalizes asset id case and rejects non-positive claims', async () => {
+    const upper = await verifyPayment({ ...claim, assetId: USD.toUpperCase() }, sources({ check: { ...confirmed, assetId: USD } }), {
+      amountMatch: 'exact',
+    });
+    expect(upper.isValid).toBe(true);
+    await expect(verifyPayment({ ...claim, amountAtomic: 0n }, sources(), { amountMatch: 'at-least' })).rejects.toThrow(/positive/);
+  });
+
   it('flags missing evidence, amounts and bad signatures', async () => {
     expect((await verifyPayment(claim, sources(), { amountMatch: 'exact' })).failures).toEqual(['ASSET_UNVERIFIABLE']);
     const none = await verifyPayment(claim, sources({ check: { ...confirmed, receivedAtomic: 0n } }), { amountMatch: 'exact' });
@@ -180,6 +188,9 @@ describe('tx inspection', () => {
       'BDX',
     ]);
     expect(extractAssetIds({ vout: [{ amount: 1, target: { key: 'k' } }] })).toBeNull();
+    // Partial tagging: an untagged native output next to a tagged dust token output proves nothing.
+    expect(extractAssetIds({ vout: [{ target: { key: 'k' } }, { target: { key: 'k2', asset_id: USD } }] })).toBeNull();
+    expect(extractAssetIds({ vout: [] })).toBeNull();
     expect(extractAssetIds(null)).toBeNull();
   });
 

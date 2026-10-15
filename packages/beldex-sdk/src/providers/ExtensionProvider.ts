@@ -1,7 +1,7 @@
 import { BDX_DECIMALS, NATIVE_TOKEN_ID, PRIORITY_FLASH, PRIORITY_NORMAL } from '../constants';
 import { UnsupportedCapabilityError, ValidationError } from '../errors';
 import { isBnsName, normalizeBnsName } from '../bns/resolver';
-import { isValidAddress } from '../address/address';
+import { assertValidAddress, isValidAddress } from '../address/address';
 import { toBigIntAmount } from '../rpc/json';
 import type {
   BNSResolution,
@@ -38,22 +38,22 @@ export interface ExtensionClient {
 export class ExtensionProvider implements IBeldexProvider {
   readonly kind = 'browser-extension' as const;
   readonly capabilities = EXTENSION_CAPABILITIES;
-  private currentNetwork: BeldexNetwork;
-
   constructor(
     private readonly client: ExtensionClient,
-    expectedNetwork: Exclude<BeldexNetwork, 'mock-devnet'> = 'testnet',
-  ) {
-    this.currentNetwork = expectedNetwork;
-  }
+    private readonly expectedNetwork: Exclude<BeldexNetwork, 'mock-devnet'> = 'testnet',
+  ) {}
 
   get network(): BeldexNetwork {
-    return this.currentNetwork;
+    return this.expectedNetwork;
   }
 
+  /** Rejects a wallet on a different network than the app expects. */
   async connectWallet(): Promise<WalletConnection> {
     const { address, network } = await this.client.connect();
-    this.currentNetwork = network;
+    if (network !== this.expectedNetwork) {
+      throw new ValidationError(`The wallet is on ${network}; switch it to ${this.expectedNetwork}.`);
+    }
+    assertValidAddress(address, this.expectedNetwork);
     return { address, network };
   }
 
@@ -69,7 +69,7 @@ export class ExtensionProvider implements IBeldexProvider {
       domain: result.name,
       resolvedAddress: result.address,
       ownerBnsHash: '',
-      isValid: isValidAddress(result.address, this.currentNetwork),
+      isValid: isValidAddress(result.address, this.expectedNetwork),
       source: 'extension',
     };
   }
@@ -83,6 +83,7 @@ export class ExtensionProvider implements IBeldexProvider {
     const [recipient] = recipients;
     if (recipients.length !== 1 || !recipient) throw new UnsupportedCapabilityError('batch', this.kind);
     if (recipient.tokenId !== NATIVE_TOKEN_ID) throw new UnsupportedCapabilityError('assets', this.kind);
+    assertValidAddress(recipient.resolvedAddress, this.expectedNetwork);
     const { txHash, fee } = await this.client.sendTransaction({
       to: recipient.resolvedAddress,
       amount: parseUnits(recipient.amount, BDX_DECIMALS),

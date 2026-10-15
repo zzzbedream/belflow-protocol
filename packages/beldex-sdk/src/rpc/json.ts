@@ -1,12 +1,45 @@
 // Beldex RPC encodes uint64 amounts as bare JSON numbers. JavaScript numbers
-// lose precision above 2^53, so large integers are kept as strings on the way
-// in and bigint values are written as bare numbers on the way out.
+// lose precision above 2^53, so large integer tokens are quoted before
+// parsing. A small scanner skips string literals so JSON embedded inside
+// strings (e.g. get_transactions "as_json") is never altered.
 
 const BIGINT_MARKER = '__belflow_bigint__';
-const LARGE_INTEGER = /([:[,]\s*)(-?\d{16,})(?=\s*[,\]}])/g;
+const SAFE_DIGITS = 15;
+
+function isDigit(char: string | undefined): boolean {
+  return char !== undefined && char >= '0' && char <= '9';
+}
+
+/** Quotes integer literals longer than 15 digits that appear outside strings. */
+export function quoteLargeIntegers(text: string): string {
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    const char = text[i] as string;
+    if (char === '"') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== '"') j += text[j] === '\\' ? 2 : 1;
+      out += text.slice(i, j + 1);
+      i = j + 1;
+      continue;
+    }
+    if (char === '-' || isDigit(char)) {
+      let j = i + 1;
+      while (j < text.length && /[0-9.eE+-]/.test(text[j] as string)) j += 1;
+      const token = text.slice(i, j);
+      const digits = token.replace('-', '');
+      out += /^-?\d+$/.test(token) && digits.length > SAFE_DIGITS ? `"${token}"` : token;
+      i = j;
+      continue;
+    }
+    out += char;
+    i += 1;
+  }
+  return out;
+}
 
 export function parseJsonSafe<T>(text: string): T {
-  return JSON.parse(text.replace(LARGE_INTEGER, '$1"$2"')) as T;
+  return JSON.parse(quoteLargeIntegers(text)) as T;
 }
 
 export function stringifyJsonSafe(value: unknown): string {

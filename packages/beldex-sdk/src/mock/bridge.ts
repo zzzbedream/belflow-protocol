@@ -45,7 +45,9 @@ function outputs(params: Params): MockOutputDto[] {
   }
   return raw.map((item) => {
     const output = (item ?? {}) as Params;
-    return { address: str(output, 'address', 120), assetId: str(output, 'assetId', 64), amountAtomic: atomic(output, 'amountAtomic') };
+    const assetId = str(output, 'assetId', 64);
+    if (assetId !== 'BDX' && !HEX64.test(assetId)) throw new ValidationError('assetId must be "BDX" or 64 hex characters.');
+    return { address: str(output, 'address', 120), assetId, amountAtomic: atomic(output, 'amountAtomic') };
   });
 }
 
