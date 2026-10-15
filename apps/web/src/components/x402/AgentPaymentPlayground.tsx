@@ -12,7 +12,7 @@ import { useBeldexStore } from '@/store/useBeldexStore';
 
 interface TraceEvent {
   at: number;
-  type: 'request' | 'challenge' | 'policy-approved' | 'paid' | 'retry' | 'response' | 'error';
+  type: 'request' | 'challenge' | 'policy-approved' | 'paid' | 'retry' | 'response' | 'error' | 'funded';
   detail: Record<string, string | number | boolean>;
 }
 
@@ -32,6 +32,7 @@ const STEP_STYLE: Record<TraceEvent['type'], { label: string; tone: string; icon
   retry: { label: 'Retry with X-Beldex-Payment-Proof', tone: 'text-ink-2', icon: Terminal },
   response: { label: 'Response', tone: 'text-verified', icon: ShieldCheck },
   error: { label: 'Refused', tone: 'text-danger', icon: CircleAlert },
+  funded: { label: 'Treasury funded agent wallet', tone: 'text-vault', icon: Bot },
 };
 
 function TraceLine({ event, start }: { event: TraceEvent; start: number }) {

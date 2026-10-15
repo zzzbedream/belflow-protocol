@@ -112,7 +112,7 @@ export const agentRunSchema = z
 
 export interface AgentTraceEvent {
   at: number;
-  type: AgentEvent['type'] | 'error';
+  type: AgentEvent['type'] | 'error' | 'funded';
   detail: Record<string, string | number | boolean>;
 }
 
@@ -162,6 +162,8 @@ export async function runAgent(input: z.infer<typeof agentRunSchema>, origin: st
     onEvent: (event) => trace.push({ at: Date.now(), type: event.type, detail: serialize(event) }),
   });
 
+  if (input.network === 'mock-devnet') await fundMockAgent(runtime, config, input.calls, trace);
+
   const responses: unknown[] = [];
   for (let i = 0; i < input.calls; i += 1) {
     // A single-UTXO agent wallet must wait for its change to unlock between
@@ -190,6 +192,32 @@ export async function runAgent(input: z.infer<typeof agentRunSchema>, origin: st
   }
   const spent = agentFetch.spent()[tokenId] ?? 0n;
   return { agentBns: runtime.agentBns, tokenTicker, spent: formatUnits(spent, decimals), trace, responses };
+}
+
+/**
+ * Mock devnet only: the company treasury tops up its agent wallet when the
+ * agent cannot cover the requested calls (shown as a step in the trace).
+ */
+async function fundMockAgent(
+  runtime: Awaited<ReturnType<typeof getRuntime>>,
+  config: X402Config,
+  calls: number,
+  trace: AgentTraceEvent[],
+): Promise<void> {
+  const { tokenId, decimals, tokenTicker, amountAtomic } = config.price;
+  const agentAddress = (await runtime.agent.connectWallet()).address;
+  const balances = await runtime.agent.getBalances(agentAddress);
+  const needed = amountAtomic * BigInt(calls + 1);
+  if (parseUnits(balances[tokenId] ?? '0', decimals) >= needed) return;
+  const topUp = needed * 4n;
+  // Let any treasury change from earlier payrolls unlock first.
+  await runtime.advanceBlocks?.(CHANGE_UNLOCK_BLOCKS + 1);
+  await runtime.treasury.sendConfidentialBatch(
+    [{ id: `agent-topup-${Date.now()}`, recipientInput: runtime.agentBns, resolvedAddress: agentAddress, amount: formatUnits(topUp, decimals), tokenId }],
+    false,
+  );
+  await runtime.advanceBlocks?.(CHANGE_UNLOCK_BLOCKS + 1);
+  trace.push({ at: Date.now(), type: 'funded', detail: { from: 'tesoreria.bdx', to: runtime.agentBns, amount: formatUnits(topUp, decimals), token: tokenTicker } });
 }
 
 export async function x402Metrics(network: AppNetwork) {
