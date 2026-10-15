@@ -6,6 +6,10 @@ import './globals.css';
 const grotesk = Space_Grotesk({ subsets: ['latin'], variable: '--font-grotesk', display: 'swap' });
 const mono = JetBrains_Mono({ subsets: ['latin'], variable: '--font-mono', display: 'swap', weight: ['400', '500'] });
 
+// The CSP in middleware.ts uses a per-request script nonce. Statically
+// prerendered pages would ship scripts without it, so render per request.
+export const dynamic = 'force-dynamic';
+
 export const metadata: Metadata = {
   title: { default: 'BelFlow Protocol', template: '%s · BelFlow' },
   description: 'Confidential payroll, selective compliance receipts and x402 AI payment rails on Beldex.',
