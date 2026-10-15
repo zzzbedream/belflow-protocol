@@ -2,6 +2,7 @@
 // extended where the real Beldex stack requires more information.
 
 import type { VerificationSources } from './compliance/verifier';
+import type { OutgoingTransfer } from './providers/reconcile';
 
 export type BeldexNetwork = 'testnet' | 'mainnet' | 'mock-devnet';
 
@@ -196,6 +197,10 @@ export interface IBeldexProvider {
   signMessage?(message: string): Promise<{ signature: string; address: string }>;
   /** Pays one chunk (≤ 15 recipients, one asset). More than one part means the wallet split it. */
   sendBatchChunk?(recipients: BatchPaymentRecipient[], useFlashTx: boolean): Promise<ConfidentialTxPart[]>;
+  /** Outgoing transfers known to the sending wallet (reconciliation of uncertain sends). */
+  listOutgoingTransfers?(filter?: { sinceHeight?: number }): Promise<OutgoingTransfer[]>;
+  /** Current chain height as seen by this provider. */
+  chainHeight?(): Promise<number>;
   /** New receiving subaddress of this wallet (one per invoice binds payments to it). */
   createSubaddress?(label: string): Promise<string>;
   /** Re-export a tx secret key from the sending wallet. */

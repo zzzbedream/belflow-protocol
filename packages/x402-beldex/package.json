@@ -14,20 +14,29 @@
   "publishConfig": {
     "exports": {
       ".": {
-        "import": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-        "require": { "types": "./dist/index.d.cts", "default": "./dist/index.cjs" }
+        "import": {
+          "types": "./dist/index.d.ts",
+          "default": "./dist/index.js"
+        },
+        "require": {
+          "types": "./dist/index.d.cts",
+          "default": "./dist/index.cjs"
+        }
       }
     },
     "main": "./dist/index.cjs",
     "module": "./dist/index.js",
     "types": "./dist/index.d.ts"
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsup src/index.ts --format esm,cjs --dts --clean",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "test:audit": "vitest run --config vitest.audit.config.ts"
   },
   "dependencies": {
     "@belflow/sdk": "workspace:*"
@@ -35,6 +44,7 @@
   "devDependencies": {
     "@types/node": "26.6.5",
     "@vitest/coverage-v8": "5.0.4",
+    "fast-check": "4.10.2",
     "tsup": "9.0.0",
     "typescript": "5.9.3",
     "vitest": "5.0.4"

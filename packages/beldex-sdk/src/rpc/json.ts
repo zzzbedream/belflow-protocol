@@ -48,14 +48,20 @@ export function stringifyJsonSafe(value: unknown): string {
   ).replace(new RegExp(`"${BIGINT_MARKER}(-?\\d+)"`, 'g'), '$1');
 }
 
-/** Normalizes an RPC amount (number or numeric string) into bigint atomic units. */
+const UINT64_MAX = 2n ** 64n - 1n;
+
+/** Normalizes an RPC amount (number or numeric string) into a uint64 bigint. */
 export function toBigIntAmount(value: number | string | bigint | undefined | null): bigint {
   if (value === undefined || value === null) return 0n;
-  if (typeof value === 'bigint') return value;
-  if (typeof value === 'number') {
+  let result: bigint;
+  if (typeof value === 'bigint') result = value;
+  else if (typeof value === 'number') {
     if (!Number.isSafeInteger(value)) throw new RangeError(`Unsafe integer amount: ${value}`);
-    return BigInt(value);
+    result = BigInt(value);
+  } else {
+    if (!/^\d+$/.test(value)) throw new RangeError(`Not a non-negative integer amount: ${value}`);
+    result = BigInt(value);
   }
-  if (!/^-?\d+$/.test(value)) throw new RangeError(`Not an integer amount: ${value}`);
-  return BigInt(value);
+  if (result < 0n || result > UINT64_MAX) throw new RangeError(`Amount outside uint64: ${result}`);
+  return result;
 }

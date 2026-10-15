@@ -23,6 +23,7 @@ export const POST = route(async (request: Request, context: { params: Promise<{ 
       blockHeight: verification.blockHeight,
       assetVerificationLevel: verification.assetVerificationLevel,
       failures: verification.failures,
+      errorCode: verification.failures.includes('ASSET_MISMATCH') ? 'ASSET_MISMATCH' : null,
     },
   });
 });

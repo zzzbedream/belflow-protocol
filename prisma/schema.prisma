@@ -114,6 +114,17 @@ model PayrollBatchJob {
   @@index([network, status])
 }
 
+/// Every payroll transaction, attributed to exactly one job chunk. The
+/// reconciler refuses to match a wallet transfer already recorded here.
+model PayrollTxRecord {
+  txHash     String   @id
+  jobId      String
+  chunkIndex Int
+  createdAt  DateTime @default(now())
+
+  @@index([jobId])
+}
+
 /// Single-use login challenges (wallet signature over a server nonce).
 model AuthChallenge {
   nonce      String   @id

@@ -79,6 +79,13 @@ const HANDLERS: Record<string, (api: MockChainApi, p: Params) => Promise<unknown
   getTransaction: (api, p) => api.getTransaction(hex64(p, 'txHash')),
   getIncomingTransfers: (api, p) => api.getIncomingTransfers(hex64(p, 'txHash'), str(p, 'address', 120)),
   getTxKey: (api, p) => api.getTxKey(hex64(p, 'txHash'), str(p, 'requester', 120)),
+  getOutgoingTransfers: (api, p) => {
+    const since = p.sinceHeight;
+    if (since !== undefined && (typeof since !== 'number' || !Number.isInteger(since) || since < 0)) {
+      throw new ValidationError('sinceHeight must be a non-negative integer.');
+    }
+    return api.getOutgoingTransfers(str(p, 'from', 120), since as number | undefined);
+  },
   mineBlocks: (api, p) => {
     const count = p.count;
     if (typeof count !== 'number' || !Number.isInteger(count) || count < 1 || count > MAX_MINE) {

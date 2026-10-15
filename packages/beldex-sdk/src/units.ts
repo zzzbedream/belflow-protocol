@@ -2,6 +2,8 @@ import { ValidationError } from './errors';
 
 const DECIMAL_PATTERN = /^(\d+)(?:\.(\d+))?$/;
 const MAX_DECIMALS = 18;
+/** Every on-chain amount is a uint64. */
+export const MAX_U64 = 2n ** 64n - 1n;
 
 function assertDecimals(decimals: number): void {
   if (!Number.isInteger(decimals) || decimals < 0 || decimals > MAX_DECIMALS) {
@@ -24,7 +26,9 @@ export function parseUnits(value: string, decimals: number): bigint {
   if (fraction.length > decimals) {
     throw new ValidationError(`"${value}" has more than ${decimals} decimal places.`);
   }
-  return BigInt(whole + fraction.padEnd(decimals, '0'));
+  const atomic = BigInt(whole + fraction.padEnd(decimals, '0'));
+  if (atomic > MAX_U64) throw new ValidationError(`"${value}" exceeds the uint64 range of on-chain amounts.`);
+  return atomic;
 }
 
 /**

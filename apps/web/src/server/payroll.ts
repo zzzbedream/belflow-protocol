@@ -3,6 +3,7 @@ import {
   CHANGE_UNLOCK_BLOCKS,
   belflowErrorCode,
   canonicalJson,
+  matchOutgoing,
   isValidAddress,
   planBatches,
   sha256Hex,
@@ -34,6 +35,9 @@ export interface ChunkState {
   feeAtomic: string;
   burnedAtomic: string;
   needsReconciliation?: boolean;
+  /** Chain height and wall time when the chunk was marked SUBMITTING. */
+  startHeight?: number;
+  startedAt?: number;
 }
 
 const recipientSchema = z
@@ -227,12 +231,18 @@ export async function runPayroll(request: PayrollRequest): Promise<PayrollRunRes
     const chunk = chunks[i] as ChunkState;
     if (chunk.status === 'SENT') continue;
     const recipients = chunk.recipientIds.map((id) => byId.get(id)).filter((r): r is BatchPaymentRecipient => Boolean(r));
-    chunks = chunks.map((c) => (c.index === chunk.index ? { ...c, status: 'SUBMITTING' } : c));
+    // Record where the chain was before broadcasting: the reconciler only
+    // accepts wallet transfers from this point on (never an older identical payment).
+    const startHeight = await runtime.chainHeight().catch(() => null);
+    chunks = chunks.map((c) =>
+      c.index === chunk.index ? { ...c, status: 'SUBMITTING', startedAt: Date.now(), ...(startHeight !== null ? { startHeight } : {}) } : c,
+    );
     job = await save(job.id, chunks);
     try {
       const parts = await runtime.treasury.sendBatchChunk(recipients, request.useFlash);
+      await recordPayrollTxs(job.id, chunk.index, parts.map((p) => p.txHash));
       const updated: ChunkState = {
-        ...chunk,
+        ...(chunks.find((c) => c.index === chunk.index) ?? chunk),
         status: 'SENT',
         txHashes: parts.map((p) => p.txHash),
         feeAtomic: parts.reduce((sum, p) => sum + BigInt(p.feeAtomic), 0n).toString(),
@@ -262,16 +272,19 @@ export async function runPayroll(request: PayrollRequest): Promise<PayrollRunRes
         const height = await runtime.chainHeight().catch(() => null);
         const reported = (error as { unlockHeight?: number }).unlockHeight ?? -1;
         const unlockAt = reported > 0 ? reported : height !== null ? height + CHANGE_UNLOCK_BLOCKS : null;
-        job = await save(job.id, chunks, { status: JOB_STATUS.waitingUnlock, lockedUntilHeight: unlockAt, lastError: (error as Error).message });
         events.push(`Chunk ${chunk.index + 1}: change outputs locked${unlockAt ? ` until block ${unlockAt}` : ''}.`);
         if (runtime.advanceBlocks && unlockWaits < MAX_MOCK_UNLOCK_WAITS) {
+          // Keep the claim (status stays SUBMITTED) while this runner waits and
+          // retries: releasing it here let a concurrent runner pay the same chunk.
+          job = await save(job.id, chunks, { lockedUntilHeight: unlockAt, lastError: (error as Error).message });
           unlockWaits += 1;
           await runtime.advanceBlocks(CHANGE_UNLOCK_BLOCKS);
           events.push(`Mock devnet: mined ${CHANGE_UNLOCK_BLOCKS} blocks to unlock change.`);
-          await db.payrollBatchJob.update({ where: { id: job.id }, data: { status: JOB_STATUS.submitted } });
           i -= 1;
           continue;
         }
+        // Only now is the claim released: this runner stops working on the job.
+        job = await save(job.id, chunks, { status: JOB_STATUS.waitingUnlock, lockedUntilHeight: unlockAt, lastError: (error as Error).message });
         return { job: toJobDto(job), sent, events };
       }
       const unknown = code === 'OUTCOME_UNKNOWN';
@@ -285,6 +298,88 @@ export async function runPayroll(request: PayrollRequest): Promise<PayrollRunRes
   job = await save(job.id, chunks, { status: JOB_STATUS.confirmed, lockedUntilHeight: null, lastError: null });
   events.push('All chunks submitted.');
   return { job: toJobDto(job), sent, events };
+}
+
+/** Every payroll tx is recorded once: the reconciler never attributes it to another chunk. */
+async function recordPayrollTxs(jobId: string, chunkIndex: number, txHashes: string[]): Promise<void> {
+  for (const txHash of txHashes) {
+    try {
+      await db.payrollTxRecord.create({ data: { txHash: txHash.toLowerCase(), jobId, chunkIndex } });
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'P2002') throw error;
+    }
+  }
+}
+
+/** Blocks after which an unseen broadcast is considered dropped and safe to resend. */
+export const RECONCILE_SAFE_BLOCKS = 10;
+const RECONCILE_CLOCK_SKEW_S = 60;
+
+/**
+ * Resolves chunks left UNKNOWN (timeout or crash after broadcast) by looking
+ * at the sending wallet's own outgoing transfers:
+ * - every output found in txs not attributed elsewhere, at/after the chunk's
+ *   start height → SENT;
+ * - nothing found and ≥ RECONCILE_SAFE_BLOCKS since the start → PENDING
+ *   (safe to resend with the same idempotency key);
+ * - otherwise stays UNKNOWN (partial matches always need a human).
+ */
+export async function reconcilePayrollJob(request: PayrollRequest): Promise<PayrollRunResult> {
+  const runtime = await getRuntime(request.network);
+  const existing = await db.payrollBatchJob.findUnique({ where: { idempotencyKey: request.idempotencyKey } });
+  if (!existing) throw new HttpError(404, 'Payroll job not found.', 'NOT_FOUND');
+  if (existing.payloadHash !== payloadHash(request)) throw conflict('Payload does not match this payroll job.');
+  if (!(await claim(existing))) return { job: toJobDto(existing), sent: [], events: ['Another runner is processing this payroll.'] };
+  let job = await db.payrollBatchJob.findUniqueOrThrow({ where: { id: existing.id } });
+  if (!runtime.treasury.listOutgoingTransfers) throw new HttpError(422, 'This provider cannot list outgoing transfers.', 'UNSUPPORTED_CAPABILITY');
+
+  const byId = new Map(request.recipients.map((r) => [r.id, r]));
+  const recorded = new Set((await db.payrollTxRecord.findMany({ select: { txHash: true } })).map((row) => row.txHash));
+  const height = await runtime.chainHeight().catch(() => null);
+  const events: string[] = [];
+  let chunks = JSON.parse(job.chunksJson) as ChunkState[];
+
+  for (const chunk of chunks) {
+    if (chunk.status !== 'UNKNOWN' && chunk.status !== 'SUBMITTING') continue;
+    const expected = [];
+    for (const id of chunk.recipientIds) {
+      const recipient = byId.get(id);
+      if (!recipient) continue;
+      expected.push({ address: recipient.resolvedAddress, amountAtomic: await toAtomic(request.network, recipient.tokenId, recipient.amount), assetId: recipient.tokenId });
+    }
+    const candidates = await runtime.treasury.listOutgoingTransfers(chunk.startHeight !== undefined ? { sinceHeight: chunk.startHeight } : {});
+    const match = matchOutgoing(candidates, expected, {
+      ...(chunk.startHeight !== undefined ? { sinceHeight: chunk.startHeight } : {}),
+      ...(chunk.startedAt !== undefined ? { sinceTimestamp: Math.floor(chunk.startedAt / 1000) - RECONCILE_CLOCK_SKEW_S } : {}),
+      excludeTxHashes: recorded,
+    });
+    let next: ChunkState = chunk;
+    if (match.complete) {
+      await recordPayrollTxs(job.id, chunk.index, match.txHashes);
+      match.txHashes.forEach((hash) => recorded.add(hash));
+      next = { ...chunk, status: 'SENT', txHashes: match.txHashes };
+      events.push(`Chunk ${chunk.index + 1}: found in wallet history (${match.txHashes.length} tx), marked SENT.`);
+    } else if (match.matchedOutputs === 0 && height !== null && chunk.startHeight !== undefined && height - chunk.startHeight >= RECONCILE_SAFE_BLOCKS) {
+      next = { ...chunk, status: 'PENDING' };
+      events.push(`Chunk ${chunk.index + 1}: not broadcast after ${RECONCILE_SAFE_BLOCKS}+ blocks, safe to resend.`);
+    } else {
+      next = { ...chunk, status: 'UNKNOWN', needsReconciliation: match.matchedOutputs > 0 || chunk.needsReconciliation === true };
+      events.push(
+        match.matchedOutputs > 0
+          ? `Chunk ${chunk.index + 1}: partial match (${match.matchedOutputs}/${expected.length}); manual review required.`
+          : `Chunk ${chunk.index + 1}: not found yet; wait ${RECONCILE_SAFE_BLOCKS} blocks before it can be resent.`,
+      );
+    }
+    chunks = chunks.map((c) => (c.index === chunk.index ? next : c));
+  }
+
+  const allSent = chunks.every((c) => c.status === 'SENT');
+  const stillUnknown = chunks.some((c) => c.status === 'UNKNOWN');
+  job = await save(job.id, chunks, {
+    status: allSent ? JOB_STATUS.confirmed : JOB_STATUS.failed,
+    lastError: allSent ? null : stillUnknown ? 'Some chunks still need reconciliation.' : 'Reconciled: resume to send the remaining chunks.',
+  });
+  return { job: toJobDto(job), sent: [], events };
 }
 
 async function chunkVolume(network: AppNetwork, recipients: BatchPaymentRecipient[]): Promise<string> {

@@ -15,7 +15,13 @@ const config: NextConfig = {
   poweredByHeader: false,
   transpilePackages: ['@belflow/sdk', '@belflow/x402'],
   async headers() {
-    return [{ source: '/:path*', headers: SECURITY_HEADERS }];
+    // Proof and checkout pages show disclosed amounts: never cache them.
+    const noStore = [{ key: 'Cache-Control', value: 'no-store, private' }];
+    return [
+      { source: '/:path*', headers: SECURITY_HEADERS },
+      { source: '/verify/:path*', headers: noStore },
+      { source: '/pay/:path*', headers: noStore },
+    ];
   },
 };
 

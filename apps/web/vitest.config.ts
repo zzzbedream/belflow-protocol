@@ -11,6 +11,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['test/**/*.test.ts'],
+    exclude: ['test/audit/**'],
     globalSetup: ['test/global-setup.ts'],
     setupFiles: ['test/setup-env.ts'],
     fileParallelism: false,

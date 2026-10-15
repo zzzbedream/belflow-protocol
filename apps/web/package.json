@@ -13,7 +13,8 @@
     "test:coverage": "vitest run --coverage",
     "e2e": "playwright test",
     "db:push": "prisma db push",
-    "db:generate": "prisma generate"
+    "db:generate": "prisma generate",
+    "test:audit": "vitest run --config vitest.audit.config.ts"
   },
   "prisma": {
     "schema": "../../prisma/schema.prisma"
@@ -47,6 +48,7 @@
     "@vitest/coverage-v8": "5.0.4",
     "eslint": "9.39.5",
     "eslint-config-next": "15.5.28",
+    "fast-check": "4.10.2",
     "postcss": "8.5.30",
     "prisma": "6.19.3",
     "tailwindcss": "4.3.3",

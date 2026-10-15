@@ -28,6 +28,7 @@ import type {
 } from '../types';
 import { formatUnits, parseUnits } from '../units';
 import { FULL_CAPABILITIES, executeBatch, summarizeBatch } from './batch';
+import type { OutgoingTransfer } from './reconcile';
 
 /** Descriptor consumed by deploy_new_asset (written to a file on the wallet host). */
 export interface AssetDescriptor {
@@ -52,6 +53,8 @@ export interface WalletRpcProviderOptions {
   writeAssetDescriptor?: AssetDescriptorWriter;
   /** Decimals for assets this wallet did not deploy. */
   decimalsFor?: (assetId: string) => Promise<number | undefined>;
+  /** Wallet account used for balances, addresses and spends (e.g. a dedicated faucet account). */
+  accountIndex?: number;
 }
 
 const TOO_LARGE = /too (big|large)|too many (outputs|destinations)|would be too large/i;
@@ -94,13 +97,51 @@ export class WalletRpcProvider implements IBeldexProvider {
         : null;
   }
 
+  private get account(): number {
+    return this.options.accountIndex ?? 0;
+  }
+
   async connectWallet(): Promise<WalletConnection> {
-    const { address } = await this.wallet.getAddress();
+    const { address } = await this.wallet.getAddress(this.account);
     return { address, network: this.network };
   }
 
+  async chainHeight(): Promise<number> {
+    const height = await this.currentHeight();
+    if (height === null) throw new RpcTransportError('get_height', 'Height unavailable.');
+    return height;
+  }
+
+  /** Outgoing, pending and pool transfers from the wallet cache, with destinations. */
+  async listOutgoingTransfers(filter: { sinceHeight?: number } = {}): Promise<OutgoingTransfer[]> {
+    const result = await this.wallet.getTransfers({
+      accountIndex: this.account,
+      ...(filter.sinceHeight !== undefined ? { minHeight: Math.max(0, filter.sinceHeight - 1) } : {}),
+    });
+    const entries = [...(result.out ?? []), ...(result.pending ?? []), ...(result.pool ?? [])];
+    return entries.map((entry) => ({
+      txHash: entry.txid.toLowerCase(),
+      height: entry.height && entry.height > 0 ? entry.height : null,
+      timestamp: entry.timestamp ?? null,
+      destinations: (entry.destinations ?? []).map((destination) => ({
+        address: destination.address,
+        amountAtomic: toBigIntAmount(destination.amount),
+        ...(destination.asset_id !== undefined ? { assetId: destination.asset_id || NATIVE_TOKEN_ID } : entry.asset_id !== undefined ? { assetId: entry.asset_id || NATIVE_TOKEN_ID } : {}),
+      })),
+    }));
+  }
+
+  /** Best-effort wallet flush so outgoing destinations and tx keys survive a crash. */
+  private async flush(): Promise<void> {
+    try {
+      await this.wallet.store();
+    } catch {
+      // Older builds may not expose `store`; the wallet still autosaves.
+    }
+  }
+
   async getBalances(): Promise<Record<string, string>> {
-    const balance = await this.wallet.getBalance();
+    const balance = await this.wallet.getBalance(this.account);
     const result: Record<string, string> = {
       [NATIVE_TOKEN_ID]: formatUnits(toBigIntAmount(balance.balance), BDX_DECIMALS),
     };
@@ -161,8 +202,9 @@ export class WalletRpcProvider implements IBeldexProvider {
     const ids = recipients.map((recipient) => recipient.id);
 
     try {
-      const result = await this.wallet.transfer(destinations, priority);
+      const result = await this.wallet.transfer(destinations, priority, this.account);
       const fee = toBigIntAmount(result.fee);
+      await this.flush();
       return [this.part(result.tx_hash, result.tx_key ?? '', fee, ids, useFlashTx)];
     } catch (error) {
       if (!(error instanceof RpcError) || !TOO_LARGE.test(error.message)) throw translateTransferError(error, tokenId, 'transfer');
@@ -170,10 +212,11 @@ export class WalletRpcProvider implements IBeldexProvider {
 
     let split;
     try {
-      split = await this.wallet.transferSplit(destinations, priority);
+      split = await this.wallet.transferSplit(destinations, priority, this.account);
     } catch (error) {
       throw translateTransferError(error, tokenId, 'transfer_split');
     }
+    await this.flush();
     // Broadcast already happened: from here on nothing may throw and lose the tx hashes.
     const parts = split.tx_hash_list.map((txHash, index) =>
       this.part(txHash, split.tx_key_list?.[index] ?? '', toBigIntAmount(split.fee_list?.[index]), [], useFlashTx),

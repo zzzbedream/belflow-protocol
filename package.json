@@ -17,7 +17,8 @@
     "test:testnet": "pnpm --filter @belflow/sdk test:testnet",
     "e2e": "pnpm --filter @belflow/web e2e",
     "db:push": "pnpm --filter @belflow/web db:push",
-    "db:generate": "pnpm --filter @belflow/web db:generate"
+    "db:generate": "pnpm --filter @belflow/web db:generate",
+    "test:audit": "turbo run test:audit"
   },
   "devDependencies": {
     "@prisma/client": "6.19.3",

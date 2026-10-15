@@ -17,6 +17,7 @@ import type {
 } from '../types';
 import { formatUnits, parseUnits } from '../units';
 import { FULL_CAPABILITIES, executeBatch, summarizeBatch } from './batch';
+import type { OutgoingTransfer } from './reconcile';
 
 export interface MockTestnetProviderOptions {
   api: MockChainApi;
@@ -168,6 +169,20 @@ export class MockTestnetProvider implements IBeldexProvider {
     const address = this.requireAddress();
     if (!this.api.sign) throw new ValidationError('Signing is only available to server-side mock providers.');
     return { signature: await this.api.sign(address, message), address };
+  }
+
+  async chainHeight(): Promise<number> {
+    return (await this.api.getInfo()).height;
+  }
+
+  async listOutgoingTransfers(filter: { sinceHeight?: number } = {}): Promise<OutgoingTransfer[]> {
+    const txs = await this.api.getOutgoingTransfers(this.requireAddress(), filter.sinceHeight);
+    return txs.map((tx) => ({
+      txHash: tx.txHash,
+      height: tx.height,
+      timestamp: tx.timestamp,
+      destinations: tx.outputs.map((output) => ({ address: output.address, amountAtomic: BigInt(output.amount), assetId: output.assetId })),
+    }));
   }
 
   /** Mock subaddress: a deterministic account derived from this wallet's label. */

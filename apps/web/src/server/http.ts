@@ -16,6 +16,7 @@ const MAX_BODY_BYTES = 256 * 1024;
 /** HTTP status per SDK error code. */
 const SDK_STATUS: Record<string, number> = {
   VALIDATION: 400,
+  ASSET_MISMATCH: 422,
   UNSUPPORTED_CAPABILITY: 422,
   FUNDS_LOCKED: 409,
   INSUFFICIENT_FUNDS: 409,

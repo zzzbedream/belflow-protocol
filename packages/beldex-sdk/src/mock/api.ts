@@ -47,6 +47,7 @@ export interface MockChainApi {
   getTransaction(txHash: string): Promise<MockTxViewDto | null>;
   getIncomingTransfers(txHash: string, address: string): Promise<Array<{ assetId: string; amountAtomic: string }>>;
   getTxKey(txHash: string, requester: string): Promise<string>;
+  getOutgoingTransfers(from: string, sinceHeight?: number): Promise<MockTx[]>;
   mineBlocks(count: number): Promise<number>;
   /** Server-side only: the HTTP bridge never exposes signing. */
   sign?(address: string, message: string): Promise<string>;
@@ -130,6 +131,10 @@ export class LocalMockChainApi implements MockChainApi {
     return this.chain.getTxKey(txHash, requester);
   }
 
+  async getOutgoingTransfers(from: string, sinceHeight?: number) {
+    return this.chain.getOutgoingTransfers(from, sinceHeight);
+  }
+
   async mineBlocks(count: number) {
     return this.changed(this.chain.mineBlocks(count));
   }
@@ -210,6 +215,9 @@ export class HttpMockChainApi implements MockChainApi {
   }
   getTxKey(txHash: string, requester: string) {
     return this.call<string>('getTxKey', { txHash, requester });
+  }
+  getOutgoingTransfers(from: string, sinceHeight?: number) {
+    return this.call<MockTx[]>('getOutgoingTransfers', { from, ...(sinceHeight !== undefined ? { sinceHeight } : {}) });
   }
   mineBlocks(count: number) {
     return this.call<number>('mineBlocks', { count });

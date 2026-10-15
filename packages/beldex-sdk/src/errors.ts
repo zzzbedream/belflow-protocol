@@ -36,6 +36,19 @@ export class ValidationError extends BelflowError {
   }
 }
 
+/**
+ * The payment reached the recipient in a different asset than claimed
+ * (e.g. BDX or a test token sent against a bUSD invoice).
+ */
+export class AssetMismatchError extends BelflowError {
+  constructor(
+    readonly expectedAssetId: string,
+    readonly txHash: string,
+  ) {
+    super(`Transaction ${txHash.slice(0, 12)}… did not pay asset ${expectedAssetId.slice(0, 12)}….`, 'ASSET_MISMATCH');
+  }
+}
+
 export class InsufficientFundsError extends BelflowError {
   constructor(tokenId: string) {
     super(`Insufficient unlocked balance for ${tokenId}.`, 'INSUFFICIENT_FUNDS');

@@ -26,6 +26,8 @@ export * from './mock/bridge';
 export type { MockAsset, MockChainState, MockTx, MockOutput } from './mock/state';
 
 export * from './providers/batch';
+export * from './providers/reconcile';
+export * from './providers/funds';
 export * from './providers/MockTestnetProvider';
 export * from './providers/WalletRpcProvider';
 export * from './providers/ExtensionProvider';

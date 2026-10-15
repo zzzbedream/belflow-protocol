@@ -1,8 +1,13 @@
 import { BDX_DECIMALS, NATIVE_TOKEN_ID } from '../constants';
-import { ValidationError } from '../errors';
+import { AssetMismatchError, ValidationError } from '../errors';
 import { formatUnits } from '../units';
 import { buildPaymentDeclaration } from './declaration';
 import type { AssetVerificationLevel, TxKeyCheck, VerificationResult } from '../types';
+
+/** Throws the typed AssetMismatchError when a verification detected asset confusion. */
+export function assertNoAssetMismatch(result: Pick<PaymentVerification, 'failures'>, expectedAssetId: string, txHash: string): void {
+  if (result.failures.includes('ASSET_MISMATCH')) throw new AssetMismatchError(expectedAssetId, txHash);
+}
 
 /** "BDX" stays as is; asset ids are compared lowercase. */
 export function normalizeAssetId(assetId: string): string {

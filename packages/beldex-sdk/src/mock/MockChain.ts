@@ -251,6 +251,13 @@ export class MockChain {
     };
   }
 
+  /** What the sending wallet's cache reports (get_transfers "out"/"pool"), change excluded. */
+  getOutgoingTransfers(from: string, sinceHeight?: number): MockTx[] {
+    return Object.values(this.state.txs).filter(
+      (tx) => tx.from === from && tx.kind === 'transfer' && (sinceHeight === undefined || tx.height === null || tx.height >= sinceHeight),
+    );
+  }
+
   /** What the receiving wallet sees for an incoming tx (get_transfer_by_txid). */
   getIncomingTransfers(txHash: string, address: string): Array<{ assetId: string; amount: bigint }> {
     const tx = own(this.state.txs, txHash);

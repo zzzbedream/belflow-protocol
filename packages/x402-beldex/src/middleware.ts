@@ -78,7 +78,8 @@ async function issueChallenge(resourcePath: string, config: X402Config, reason?:
   return json(
     402,
     {
-      error: 'payment_required',
+      // Asset confusion gets its own typed error so agents and logs can tell it apart.
+      error: failures?.includes('ASSET_MISMATCH') ? 'asset_mismatch' : 'payment_required',
       ...(reason ? { reason } : {}),
       ...(failures ? { failures } : {}),
       challenge: { ...challenge, amountAtomic: challenge.amountAtomic.toString() },

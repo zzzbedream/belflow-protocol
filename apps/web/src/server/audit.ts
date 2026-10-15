@@ -2,6 +2,7 @@ import 'server-only';
 import { randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import {
+  assertNoAssetMismatch,
   buildAuditProofPackage,
   buildPaymentDeclaration,
   formatUnits,
@@ -93,6 +94,7 @@ export async function createProof(input: z.infer<typeof createProofSchema>) {
     runtime.verification,
     { amountMatch: 'exact', issuer },
   );
+  assertNoAssetMismatch(verification, token.tokenId, input.txHash);
   if (!verification.isValid) {
     throw new HttpError(422, `Payment could not be verified: ${verification.failures.join(', ')}`, 'NOT_VERIFIED');
   }

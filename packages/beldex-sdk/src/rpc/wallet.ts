@@ -39,7 +39,9 @@ export interface WalletTransferEntry {
   address?: string;
   asset_id?: string;
   height?: number;
+  timestamp?: number;
   confirmations?: number;
+  destinations?: Array<{ address: string; amount: RpcAmount; asset_id?: string }>;
   [key: string]: unknown;
 }
 
@@ -95,12 +97,33 @@ export class WalletRpc {
     return this.client.call(WALLET_METHODS.getHeight);
   }
 
-  transfer(destinations: TransferDestination[], priority: number): Promise<TransferResult> {
-    return this.client.call(WALLET_METHODS.transfer, { destinations, priority, get_tx_key: true });
+  transfer(destinations: TransferDestination[], priority: number, accountIndex = 0): Promise<TransferResult> {
+    return this.client.call(WALLET_METHODS.transfer, { destinations, priority, get_tx_key: true, account_index: accountIndex });
   }
 
-  transferSplit(destinations: TransferDestination[], priority: number): Promise<TransferSplitResult> {
-    return this.client.call(WALLET_METHODS.transferSplit, { destinations, priority, get_tx_keys: true });
+  transferSplit(destinations: TransferDestination[], priority: number, accountIndex = 0): Promise<TransferSplitResult> {
+    return this.client.call(WALLET_METHODS.transferSplit, { destinations, priority, get_tx_keys: true, account_index: accountIndex });
+  }
+
+  /** Outgoing/pending/pool transfers as recorded in the wallet cache (destinations included for "out"). */
+  getTransfers(params: { out?: boolean; pending?: boolean; pool?: boolean; minHeight?: number; accountIndex?: number }): Promise<{
+    out?: WalletTransferEntry[];
+    pending?: WalletTransferEntry[];
+    pool?: WalletTransferEntry[];
+  }> {
+    return this.client.call(WALLET_METHODS.getTransfers, {
+      out: params.out ?? true,
+      pending: params.pending ?? true,
+      pool: params.pool ?? true,
+      in: false,
+      account_index: params.accountIndex ?? 0,
+      ...(params.minHeight !== undefined ? { filter_by_height: true, min_height: params.minHeight } : {}),
+    });
+  }
+
+  /** Flushes the wallet file to disk (outgoing destinations and tx keys). */
+  store(): Promise<Record<string, never>> {
+    return this.client.call(WALLET_METHODS.store);
   }
 
   checkTxKey(txid: string, txKey: string, address: string): Promise<CheckTxKeyResult> {

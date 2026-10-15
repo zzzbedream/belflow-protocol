@@ -23,6 +23,8 @@ export const WALLET_METHODS = {
   checkTxKey: 'check_tx_key',
   getTxKey: 'get_tx_key',
   getTransferByTxid: 'get_transfer_by_txid',
+  getTransfers: 'get_transfers',
+  store: 'store',
   bnsHashName: 'bns_hash_name',
   bnsDecryptValue: 'bns_decrypt_value',
   deployNewAsset: 'deploy_new_asset',
