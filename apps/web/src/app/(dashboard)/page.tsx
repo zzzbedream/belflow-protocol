@@ -68,7 +68,11 @@ export default function TreasuryPage() {
                 </ul>
               )}
             </Panel>
-            <TelemetryCards overview={data} />
+            {data.telemetry ? (
+              <TelemetryCards overview={data} />
+            ) : (
+              <Notice tone="info">Telemetry is visible to the treasury operator only.</Notice>
+            )}
           </div>
           <Panel kicker="Active capability matrix" title="Which rail signs what">
             <CapabilityMatrix rows={data.capabilityMatrix} />

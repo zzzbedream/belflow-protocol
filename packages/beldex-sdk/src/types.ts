@@ -196,6 +196,8 @@ export interface IBeldexProvider {
   signMessage?(message: string): Promise<{ signature: string; address: string }>;
   /** Pays one chunk (≤ 15 recipients, one asset). More than one part means the wallet split it. */
   sendBatchChunk?(recipients: BatchPaymentRecipient[], useFlashTx: boolean): Promise<ConfidentialTxPart[]>;
+  /** New receiving subaddress of this wallet (one per invoice binds payments to it). */
+  createSubaddress?(label: string): Promise<string>;
   /** Re-export a tx secret key from the sending wallet. */
   getTxKey?(txHash: string): Promise<string>;
   /** Evidence sources for dual (amount + asset) verification. */

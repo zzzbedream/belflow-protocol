@@ -1,7 +1,9 @@
 import 'server-only';
 import { formatUnits, verifyPayment, verifyReceivedPayment, type PaymentVerification } from '@belflow/sdk';
 import { z } from 'zod';
+import { randomUUID } from 'node:crypto';
 import { recordActivity } from './activity';
+import { claimSettlement, releaseSettlement } from './settlement';
 import { db } from './db';
 import { conflict, notFound } from './errors';
 import { getRuntime, networkSchema, type AppNetwork } from './runtime';
@@ -69,10 +71,13 @@ export async function createInvoice(input: z.infer<typeof createInvoiceSchema>):
   const token = await getToken(input.network, input.tokenId);
   const atomic = await toAtomic(input.network, input.tokenId, input.amount);
   if (atomic <= 0n) throw conflict('Invoice amount must be positive.');
+  // A fresh subaddress per invoice binds a payment to this invoice: someone
+  // else's tx to the treasury can never be submitted to settle it.
+  const payTo = (await runtime.treasury.createSubaddress?.(`invoice-${randomUUID()}`)) ?? runtime.treasuryAddress;
   const row = await db.confidentialInvoice.create({
     data: {
       network: input.network,
-      merchantAddress: runtime.treasuryAddress,
+      merchantAddress: payTo,
       merchantBns: input.network === 'mock-devnet' ? 'tesoreria.bdx' : null,
       tokenId: token.tokenId,
       tokenTicker: token.ticker,
@@ -113,13 +118,20 @@ export async function payInvoice(
 
   if (!verification.isValid) return { invoice: toInvoiceDto(invoice), verification };
 
+  const purpose = `INVOICE:${id}`;
+  if (!(await claimSettlement(claim.txHash, purpose))) {
+    throw conflict('This transaction already settled another invoice or x402 call.');
+  }
   const updated = await db.confidentialInvoice
     .updateMany({
       where: { id, status: 'PENDING' },
       data: { status: 'PAID', paidTxHash: claim.txHash, paidAt: new Date(), assetVerificationLevel: verification.assetVerificationLevel },
     })
     .catch(() => ({ count: 0 }));
-  if (updated.count !== 1) throw conflict('Invoice already settled or this transaction already paid another invoice.');
+  if (updated.count !== 1) {
+    await releaseSettlement(claim.txHash, purpose);
+    throw conflict('Invoice is already settled.');
+  }
   await recordActivity({ network, kind: 'INVOICE', txHash: claim.txHash, feeAtomic: '0', burnedAtomic: '0', tokenId: invoice.tokenId, volumeAtomic: amountAtomic.toString() });
   return { invoice: await getInvoice(id), verification };
 }

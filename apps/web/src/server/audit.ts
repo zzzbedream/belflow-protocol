@@ -12,6 +12,7 @@ import {
 import { z } from 'zod';
 import { db } from './db';
 import { HttpError, notFound, unauthorized } from './errors';
+import { rateLimitKey } from './http';
 import { getRuntime, networkSchema, type AppNetwork } from './runtime';
 import { getToken } from './tokens';
 
@@ -144,9 +145,14 @@ function formatAtomic(amount: string, decimals: number): string {
   return BigInt(whole + fraction.padEnd(decimals, '0')).toString();
 }
 
+const PASSCODE_ATTEMPTS = 10;
+const PASSCODE_WINDOW_MS = 15 * 60 * 1000;
+
 async function loadRecord(proofId: string, passcode: string | undefined) {
   const record = await db.selectiveAuditRecord.findUnique({ where: { id: proofId } });
   if (!record) throw notFound('Proof not found.');
+  // Per-proof attempt budget, independent of client IP, against passcode guessing.
+  if (record.auditorPasscode && passcode) rateLimitKey(`audit:passcode:${proofId}`, PASSCODE_ATTEMPTS, PASSCODE_WINDOW_MS);
   if (record.auditorPasscode && !(await passcodeMatches(record.auditorPasscode, passcode))) {
     throw unauthorized('This proof requires the auditor passcode.');
   }

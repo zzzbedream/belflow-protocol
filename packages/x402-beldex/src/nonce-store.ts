@@ -10,6 +10,8 @@ export interface StoredChallenge {
   tokenTicker: string;
   recipientAddress: string;
   expiresAt: number;
+  /** Chain height when issued; payments mined before it cannot settle this challenge. */
+  issuedAtHeight?: number;
   consumed: boolean;
   consumedByTxHash?: string;
   agentBns?: string;

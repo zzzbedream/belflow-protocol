@@ -40,9 +40,21 @@ afterAll(() => {
 });
 
 describe('testnet runtime with a wallet-rpc sidecar', () => {
-  it('builds the overview from the sidecar and the public explorer', async () => {
+  it('hides treasury balances and telemetry from anyone but the operator, then shows them after login', async () => {
     const { GET } = await import('@/app/api/overview/route');
+    const anonymous = (await (await GET(new Request('http://localhost:3000/api/overview?network=testnet'))).json()) as {
+      data: { treasury: unknown; telemetry: unknown; treasuryError: string; explorer: { height: number } };
+    };
+    expect(anonymous.data.treasury).toBeNull();
+    expect(anonymous.data.telemetry).toBeNull();
+    expect(anonymous.data.treasuryError).toMatch(/operator/);
+    expect(anonymous.data.explorer.height).toBe(4_283_500);
+
+    const { issueChallenge, completeLogin, logout } = await import('@/server/auth');
+    const challenge = await issueChallenge('testnet', OPERATOR);
+    await completeLogin(challenge.nonce, 'SigV1-good');
     const response = await GET(new Request('http://localhost:3000/api/overview?network=testnet'));
+    await logout();
     const { data } = (await response.json()) as {
       data: { testnetConfigured: boolean; explorer: { height: number }; treasury: { address: string; balances: Array<{ ticker: string; amount: string }> }; capabilityMatrix: Array<{ kind: string; active: boolean }> };
     };
@@ -68,9 +80,16 @@ describe('testnet runtime with a wallet-rpc sidecar', () => {
     const retry = await issueChallenge('testnet', OPERATOR);
     await completeLogin(retry.nonce, 'SigV1-good');
     await expect(requireTreasury('testnet')).resolves.toBeUndefined();
-    expect(await readSession()).toEqual({ address: OPERATOR, network: 'testnet' });
+    const session = await readSession();
+    expect(session).toMatchObject({ address: OPERATOR, network: 'testnet' });
     await logout();
     expect(await readSession()).toBeNull();
+
+    // A relayed signature cannot be redeemed by a browser that did not request the challenge.
+    const phished = await issueChallenge('testnet', OPERATOR);
+    const { cookies } = await import('next/headers');
+    (await cookies()).delete('belflow_login_binding');
+    await expect(completeLogin(phished.nonce, 'SigV1-good')).rejects.toThrow(/different browser/);
     await expect(completeLogin('0'.repeat(32), 'SigV1-good')).rejects.toThrow(/Unknown/);
   });
 

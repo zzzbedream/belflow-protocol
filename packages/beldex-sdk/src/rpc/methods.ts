@@ -15,6 +15,7 @@ export const DAEMON_PATHS = {
 
 export const WALLET_METHODS = {
   getAddress: 'get_address',
+  createAddress: 'create_address',
   getBalance: 'get_balance',
   getHeight: 'get_height',
   transfer: 'transfer',

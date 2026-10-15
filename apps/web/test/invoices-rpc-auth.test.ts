@@ -36,8 +36,21 @@ describe('invoices', () => {
     expect(paid.status).toBe('PAID');
     await expect(payInvoice(invoice.id, { txHash: tx.txHash, txKey: tx.txKey })).rejects.toThrow(/already settled/);
 
+    // Each invoice has its own subaddress: the first invoice's payment proves nothing for the second.
     const second = await createInvoice({ network: 'mock-devnet', tokenId: busd, amount: '42.5' });
-    await expect(payInvoice(second.id, { txHash: tx.txHash, txKey: tx.txKey })).rejects.toThrow(/already paid another invoice/);
+    expect(second.merchantAddress).not.toBe(invoice.merchantAddress);
+    const reused = await payInvoice(second.id, { txHash: tx.txHash, txKey: tx.txKey });
+    expect(reused.verification.isValid).toBe(false);
+    expect(reused.verification.failures).toContain('NO_OUTPUT_FOR_RECIPIENT');
+  });
+
+  it('never lets one transaction settle two things (shared settlement claim)', async () => {
+    const { claimSettlement, releaseSettlement } = await import('@/server/settlement');
+    const hash = 'ab'.repeat(32);
+    expect(await claimSettlement(hash, 'X402:a')).toBe(true);
+    expect(await claimSettlement(hash.toUpperCase(), 'INVOICE:b')).toBe(false);
+    await releaseSettlement(hash, 'X402:a');
+    expect(await claimSettlement(hash, 'INVOICE:b')).toBe(true);
   });
 
   it('rejects asset confusion: BDX sent for a bUSD invoice', async () => {

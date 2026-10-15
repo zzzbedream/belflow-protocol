@@ -11,6 +11,7 @@ import {
 } from '@belflow/x402';
 import { z } from 'zod';
 import { recordActivity } from './activity';
+import { claimSettlement, releaseSettlement, sweepExpired } from './settlement';
 import { db } from './db';
 import { serverEnv } from './env';
 import { MOCK_ACCOUNTS } from './mockChain';
@@ -37,6 +38,7 @@ export class PrismaNonceStore implements NonceStore {
         tokenId: challenge.tokenId,
         recipientAddress: challenge.recipientAddress,
         expiresAt: new Date(challenge.expiresAt),
+        issuedAtHeight: challenge.issuedAtHeight ?? null,
       },
     });
   }
@@ -53,6 +55,7 @@ export class PrismaNonceStore implements NonceStore {
       tokenTicker: row.tokenTicker,
       recipientAddress: row.recipientAddress,
       expiresAt: row.expiresAt.getTime(),
+      ...(row.issuedAtHeight !== null ? { issuedAtHeight: row.issuedAtHeight } : {}),
       consumed: row.isConsumed,
       ...(row.consumedByTxHash ? { consumedByTxHash: row.consumedByTxHash } : {}),
       ...(row.agentBns ? { agentBns: row.agentBns } : {}),
@@ -60,6 +63,12 @@ export class PrismaNonceStore implements NonceStore {
   }
 
   async consume(nonce: string, txHash: string, now: number, agentBns?: string): Promise<ConsumeResult> {
+    // Shared claim first: the same tx can't also settle an invoice or another nonce.
+    const purpose = `X402:${nonce}`;
+    if (!(await claimSettlement(txHash, purpose))) {
+      const existing = await db.x402PaymentNonce.findUnique({ where: { nonce } });
+      return existing?.isConsumed ? 'already-consumed' : 'tx-reused';
+    }
     try {
       const result = await db.x402PaymentNonce.updateMany({
         where: { nonce, isConsumed: false, expiresAt: { gt: new Date(now) } },
@@ -67,9 +76,11 @@ export class PrismaNonceStore implements NonceStore {
       });
       if (result.count === 1) return 'ok';
     } catch (error) {
+      await releaseSettlement(txHash, purpose);
       if ((error as { code?: string }).code === 'P2002') return 'tx-reused';
       throw error;
     }
+    await releaseSettlement(txHash, purpose);
     const row = await db.x402PaymentNonce.findUnique({ where: { nonce } });
     if (!row) return 'unknown';
     if (row.isConsumed) return 'already-consumed';
@@ -79,6 +90,7 @@ export class PrismaNonceStore implements NonceStore {
 
 /** Price and payee for the demo resource on each network. */
 export async function x402Config(network: AppNetwork): Promise<X402Config> {
+  await sweepExpired();
   const env = serverEnv();
   const runtime = await getRuntime(network);
   // On testnet check_tx_key cannot attribute assets yet, so the demo charges BDX there.
@@ -97,6 +109,7 @@ export async function x402Config(network: AppNetwork): Promise<X402Config> {
     verifier: runtime.verification,
     ttlMs: CHALLENGE_TTL_MS,
     allowFlashInPool: true,
+    currentHeight: () => runtime.chainHeight(),
   };
 }
 

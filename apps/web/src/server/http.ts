@@ -26,12 +26,15 @@ const SDK_STATUS: Record<string, number> = {
   PARTIAL_BATCH: 409,
 };
 
+/** API responses can carry tx keys or balances: never cache them anywhere. */
+const NO_STORE = { 'Cache-Control': 'no-store, private' };
+
 export function ok<T>(data: T, init?: ResponseInit): NextResponse<ApiEnvelope<T>> {
-  return NextResponse.json({ success: true, data, error: null }, init);
+  return NextResponse.json({ success: true, data, error: null }, { ...init, headers: { ...NO_STORE, ...(init?.headers ?? {}) } });
 }
 
 export function fail(status: number, message: string, code = 'ERROR'): NextResponse<ApiEnvelope<never>> {
-  return NextResponse.json({ success: false, data: null, error: { message, code } }, { status });
+  return NextResponse.json({ success: false, data: null, error: { message, code } }, { status, headers: NO_STORE });
 }
 
 /** Maps every known failure to a safe client message; unknown errors are logged, not leaked. */
@@ -98,10 +101,26 @@ export function assertSameOrigin(request: Request): void {
 const buckets = new Map<string, { count: number; resetAt: number }>();
 const MAX_BUCKETS = 10_000;
 
+/**
+ * Client IP for rate limiting. Only a header set by a trusted proxy counts:
+ * BELFLOW_TRUSTED_IP_HEADER (e.g. "x-real-ip") when configured, otherwise the
+ * LAST X-Forwarded-For hop (appended by the nearest proxy; client-supplied
+ * entries come first and are ignored).
+ */
+export function clientIp(request: Request): string {
+  const trusted = process.env.BELFLOW_TRUSTED_IP_HEADER?.trim().toLowerCase();
+  if (trusted) return request.headers.get(trusted)?.trim() || 'unknown';
+  const hops = request.headers.get('x-forwarded-for')?.split(',').map((hop) => hop.trim()).filter(Boolean) ?? [];
+  return hops.at(-1) ?? 'local';
+}
+
 /** Fixed-window in-memory rate limit keyed by client IP and route. */
 export function rateLimit(request: Request, key: string, limit: number, windowMs = 60_000): void {
-  const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || request.headers.get('x-real-ip') || 'local';
-  const id = `${key}:${ip}`;
+  rateLimitKey(`${key}:${clientIp(request)}`, limit, windowMs);
+}
+
+/** Rate limit on an arbitrary key (e.g. per proof id, independent of IP). */
+export function rateLimitKey(id: string, limit: number, windowMs = 60_000): void {
   const now = Date.now();
   if (buckets.size > MAX_BUCKETS) {
     for (const [bucketId, bucket] of buckets) if (bucket.resetAt <= now) buckets.delete(bucketId);

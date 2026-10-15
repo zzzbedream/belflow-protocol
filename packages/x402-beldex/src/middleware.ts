@@ -24,6 +24,12 @@ export interface X402Config {
   allowFlashInPool?: boolean;
   now?: () => number;
   nonceFactory?: () => string;
+  /**
+   * Current chain height. When provided, each challenge records it and a
+   * payment already mined before the challenge was issued is rejected, so an
+   * old unrelated transfer to the same address cannot unlock a new call.
+   */
+  currentHeight?: () => Promise<number | null>;
 }
 
 export interface X402Payment {
@@ -56,7 +62,9 @@ async function issueChallenge(resourcePath: string, config: X402Config, reason?:
     nonce: (config.nonceFactory ?? (() => crypto.randomUUID()))(),
     expiresAt: now + (config.ttlMs ?? DEFAULT_TTL_MS),
   };
+  const issuedAtHeight = config.currentHeight ? await config.currentHeight().catch(() => null) : null;
   await config.store.create({
+    ...(typeof issuedAtHeight === 'number' ? { issuedAtHeight } : {}),
     nonce: challenge.nonce,
     network: config.network,
     resourcePath,
@@ -122,6 +130,11 @@ export async function guardRequest(request: Request, config: X402Config): Promis
   );
   if (!verification.isValid) {
     return { status: 'blocked', response: await issueChallenge(resourcePath, config, 'payment_invalid', verification.failures) };
+  }
+  const minedBefore =
+    stored.issuedAtHeight !== undefined && !verification.inPool && verification.blockHeight !== null && verification.blockHeight < stored.issuedAtHeight;
+  if (minedBefore) {
+    return { status: 'blocked', response: await issueChallenge(resourcePath, config, 'payment_predates_challenge') };
   }
 
   const consumed = await config.store.consume(nonce, proof.txHash, now, proof.agentBns);

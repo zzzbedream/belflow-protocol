@@ -170,6 +170,11 @@ export class MockTestnetProvider implements IBeldexProvider {
     return { signature: await this.api.sign(address, message), address };
   }
 
+  /** Mock subaddress: a deterministic account derived from this wallet's label. */
+  createSubaddress(label: string): Promise<string> {
+    return this.api.createAccount(`${this.label}:sub:${label}`.slice(0, 64));
+  }
+
   getTxKey(txHash: string): Promise<string> {
     return this.api.getTxKey(txHash, this.requireAddress());
   }

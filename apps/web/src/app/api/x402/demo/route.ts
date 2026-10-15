@@ -1,6 +1,6 @@
 import { withX402 } from '@belflow/x402';
 import { NextResponse } from 'next/server';
-import { toErrorResponse } from '@/server/http';
+import { rateLimit, toErrorResponse } from '@/server/http';
 import { networkSchema } from '@/server/runtime';
 import { x402Config } from '@/server/x402';
 
@@ -34,6 +34,7 @@ const premiumResource = withX402(
 /** Premium resource protected by HTTP 402 Payment Required (x402-beldex). */
 export async function GET(request: Request): Promise<Response> {
   try {
+    rateLimit(request, 'x402:demo', 120);
     return await premiumResource(request);
   } catch (error) {
     return toErrorResponse(error);

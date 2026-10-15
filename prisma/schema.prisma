@@ -83,6 +83,8 @@ model X402PaymentNonce {
   consumedByTxHash String?   @unique // one payment can never unlock two challenges
   agentBns         String?
   expiresAt        DateTime
+  /// Chain height when the challenge was issued: older payments cannot settle it.
+  issuedAtHeight   Int?
   consumedAt       DateTime?
   createdAt        DateTime  @default(now())
 
@@ -118,6 +120,9 @@ model AuthChallenge {
   network    String
   address    String
   statement  String
+  /// SHA-256 of an httpOnly cookie set when the challenge was issued: a signature
+  /// relayed from a phishing page cannot be redeemed by another browser.
+  bindingHash String
   expiresAt  DateTime
   consumedAt DateTime?
   createdAt  DateTime @default(now())
@@ -137,4 +142,18 @@ model ChainActivity {
 
   @@unique([network, kind, txHash])
   @@index([network, kind])
+}
+
+/// Logged-out sessions (JWT id) until they would have expired.
+model RevokedSession {
+  jti       String   @id
+  expiresAt DateTime
+}
+
+/// One row per transaction that settled something (invoice or x402 call).
+/// The primary key makes a single payment unusable for a second purpose.
+model SettledTransaction {
+  txHash    String   @id
+  purpose   String // INVOICE:<id> | X402:<nonce>
+  createdAt DateTime @default(now())
 }

@@ -29,7 +29,7 @@ export interface OverviewDto {
   explorer: { height: number; nettype: string; hardFork: number } | null;
   treasury: { address: string; height: number; balances: Array<TokenDto & { amount: string }> } | null;
   treasuryError: string | null;
-  telemetry: {
+  telemetry: null | {
     burnedByKind: Record<ActivityKind, string>;
     feesByKind: Record<ActivityKind, string>;
     burnedTotalAtomic: string;

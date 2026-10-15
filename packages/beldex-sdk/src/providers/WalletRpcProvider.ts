@@ -230,6 +230,10 @@ export class WalletRpcProvider implements IBeldexProvider {
     return { signature, address };
   }
 
+  async createSubaddress(label: string): Promise<string> {
+    return (await this.wallet.createAddress(label.slice(0, 64))).address;
+  }
+
   async getTxKey(txHash: string): Promise<string> {
     return (await this.wallet.getTxKey(txHash)).tx_key;
   }

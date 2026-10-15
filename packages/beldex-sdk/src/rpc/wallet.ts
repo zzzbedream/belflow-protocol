@@ -83,6 +83,10 @@ export class WalletRpc {
     return this.client.call(WALLET_METHODS.getAddress, { account_index: accountIndex });
   }
 
+  createAddress(label: string, accountIndex = 0): Promise<{ address: string; address_index: number }> {
+    return this.client.call(WALLET_METHODS.createAddress, { account_index: accountIndex, label });
+  }
+
   getBalance(accountIndex = 0): Promise<WalletBalance> {
     return this.client.call(WALLET_METHODS.getBalance, { account_index: accountIndex });
   }

@@ -15,7 +15,10 @@ const loginSchema = z
 export const GET = route(async () => {
   const session = await readSession();
   const operator = serverEnv().TREASURY_OPERATOR_ADDRESS;
-  return ok({ session, isOperator: Boolean(session && operator && session.address === operator) });
+  return ok({
+    session: session ? { address: session.address, network: session.network } : null,
+    isOperator: Boolean(session && operator && session.address === operator),
+  });
 });
 
 /** Completes a login: verifies the signed challenge and sets an httpOnly session cookie. */

@@ -22,7 +22,9 @@ const BURN_LABELS: Record<ActivityKind, string> = {
   BNS: 'BNS',
 };
 
-function BurnCard({ telemetry }: { telemetry: OverviewDto['telemetry'] }) {
+type Telemetry = NonNullable<OverviewDto['telemetry']>;
+
+function BurnCard({ telemetry }: { telemetry: Telemetry }) {
   const total = BigInt(telemetry.burnedTotalAtomic);
   const parts = (Object.keys(BURN_LABELS) as ActivityKind[]).map((kind) => ({ kind, value: BigInt(telemetry.burnedByKind[kind] ?? '0') }));
   return (
@@ -48,7 +50,7 @@ function BurnCard({ telemetry }: { telemetry: OverviewDto['telemetry'] }) {
   );
 }
 
-function SavingsCard({ telemetry, tokens }: Pick<OverviewDto, 'telemetry' | 'tokens'>) {
+function SavingsCard({ telemetry, tokens }: { telemetry: Telemetry; tokens: OverviewDto['tokens'] }) {
   const stable = tokens.filter((token) => isUsdStable(token.ticker));
   const rows = stable.map((token) => {
     const volume = BigInt(telemetry.volumeByToken[token.tokenId] ?? '0');
@@ -113,6 +115,7 @@ function SavingsCard({ telemetry, tokens }: Pick<OverviewDto, 'telemetry' | 'tok
 }
 
 export function TelemetryCards({ overview }: { overview: OverviewDto }) {
+  if (!overview.telemetry) return null;
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
       <BurnCard telemetry={overview.telemetry} />

@@ -1,5 +1,6 @@
 import { EXTENSION_CAPABILITIES, FULL_CAPABILITIES, PROTO_TESTNET_FORK_HEIGHT, type ProviderCapabilities, type ProviderKind } from '@belflow/sdk';
 import { activityTotals } from '@/server/activity';
+import { isTreasuryOperator } from '@/server/auth';
 import { testnetConfigured } from '@/server/env';
 import { explorerInfo } from '@/server/explorer';
 import { ok, rateLimit, route } from '@/server/http';
@@ -64,18 +65,26 @@ export const GET = route(async (request: Request) => {
   rateLimit(request, 'overview', 120);
   const network = networkSchema.parse(new URL(request.url).searchParams.get('network') ?? 'mock-devnet');
   const configured = testnetConfigured();
-  const [explorer, totals] = await Promise.all([network === 'testnet' ? explorerInfo() : Promise.resolve(null), activityTotals(network)]);
+  // Confidential data (balances, address, fee/volume telemetry) is only for the operator on real networks.
+  const canSee = network === 'mock-devnet' || (await isTreasuryOperator(network));
+  const [explorer, totals] = await Promise.all([
+    network === 'testnet' ? explorerInfo() : Promise.resolve(null),
+    canSee ? activityTotals(network) : Promise.resolve(null),
+  ]);
 
   let treasury = null;
   let treasuryError: string | null = null;
-  if (network === 'mock-devnet' || configured) {
+  if (!configured && network === 'testnet') {
+    treasuryError = 'Testnet sidecar not configured: treasury balances need BELDEX_WALLET_RPC_URL.';
+  } else if (!canSee) {
+    treasuryError = 'Sign in with the treasury operator wallet to view balances and telemetry.';
+  } else {
     try {
       treasury = await treasurySnapshot(network);
     } catch (error) {
-      treasuryError = (error as Error).message;
+      console.error('[belflow] treasury snapshot failed', error);
+      treasuryError = 'The treasury wallet did not respond.';
     }
-  } else {
-    treasuryError = 'Testnet sidecar not configured: treasury balances need BELDEX_WALLET_RPC_URL.';
   }
 
   return ok({

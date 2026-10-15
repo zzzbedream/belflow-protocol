@@ -123,6 +123,28 @@ describe('x402-beldex end to end', () => {
     expect(((await reuse.json()) as { reason: string }).reason).toBe('tx-reused');
   });
 
+  it('rejects a payment mined before the challenge was issued', async () => {
+    const bound = withX402(async () => Response.json({ ok: true }), { ...w.config, currentHeight: async () => w.chain.height });
+    // An unrelated earlier transfer to the provider, already confirmed.
+    const earlier = await w.agent.sendConfidentialBatch(
+      [{ id: 'old', recipientInput: 'oracle', resolvedAddress: w.oracleAddress, amount: '0.5', tokenId: w.busd }],
+      false,
+    );
+    w.chain.mineBlocks(3);
+    const challenge = parseChallenge((await bound(new Request(URL_DEMO))).headers);
+    const response = await bound(
+      new Request(URL_DEMO, { headers: { [X402_HEADERS.proof]: formatProof({ txHash: earlier.txHash, txKey: earlier.txKey }), [X402_HEADERS.nonce]: challenge.nonce } }),
+    );
+    expect(response.status).toBe(402);
+    expect(((await response.json()) as { reason: string }).reason).toBe('payment_predates_challenge');
+
+    // A payment made after the challenge still works.
+    const fresh = parseChallenge((await bound(new Request(URL_DEMO))).headers);
+    const pay = await providerPayer(w.agent).pay(fresh);
+    const ok = await bound(new Request(URL_DEMO, { headers: { [X402_HEADERS.proof]: formatProof(pay), [X402_HEADERS.nonce]: fresh.nonce } }));
+    expect(ok.status).toBe(200);
+  });
+
   it('lets exactly one of two concurrent retries through', async () => {
     const challenge = parseChallenge((await w.handler(new Request(URL_DEMO))).headers);
     const pay = await providerPayer(w.agent).pay(challenge);

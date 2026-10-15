@@ -202,6 +202,13 @@ export async function runPayroll(request: PayrollRequest): Promise<PayrollRunRes
 
   if (job.status === JOB_STATUS.confirmed) return { job: toJobDto(job), sent, events: ['Job already completed.'] };
   if (!(await claim(job))) return { job: toJobDto(job), sent, events: ['Another runner is processing this payroll.'] };
+  // Re-read after claiming: another runner may have recorded SENT chunks
+  // between our first read and the claim. Never build state from the stale row.
+  job = await db.payrollBatchJob.findUniqueOrThrow({ where: { id: job.id } });
+  if (JSON.parse(job.chunksJson).every((c: ChunkState) => c.status === 'SENT')) {
+    job = await save(job.id, JSON.parse(job.chunksJson) as ChunkState[], { status: JOB_STATUS.confirmed, lastError: null });
+    return { job: toJobDto(job), sent, events: ['Job already completed.'] };
+  }
 
   const byId = new Map(request.recipients.map((r) => [r.id, r]));
   let chunks = (JSON.parse(job.chunksJson) as ChunkState[]).map((c) =>
