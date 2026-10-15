@@ -1,0 +1,140 @@
+// BelFlow "zero-knowledge metadata" schema.
+// The server never stores wallet keys, balances, tx secret keys in clear, or
+// payroll recipient lists. It keeps references, client-encrypted blobs and
+// idempotency bookkeeping only.
+
+datasource db {
+  provider = "sqlite" // Easy local start; switch to "postgresql" in production.
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../apps/web/src/generated/prisma"
+}
+
+model PrivacyTokenRegistry {
+  id           String   @id @default(cuid())
+  tokenId      String   @unique
+  ticker       String
+  name         String
+  decimals     Int      @default(6)
+  creatorAddr  String
+  network      String   @default("testnet")
+  deployTxHash String?
+  createdAt    DateTime @default(now())
+
+  @@index([network])
+}
+
+model ConfidentialInvoice {
+  id              String   @id @default(cuid())
+  network         String   @default("testnet")
+  merchantAddress String
+  merchantBns     String?
+  tokenId         String
+  tokenTicker     String
+  tokenDecimals   Int      @default(9)
+  expectedAmount  String
+  encryptedMemo   String? // AES-256-GCM ciphertext produced in the browser; key lives in the link fragment
+  status          String   @default("PENDING") // PENDING | PAID | AUDITED
+  paidTxHash      String?  @unique
+  paidAt          DateTime?
+  assetVerificationLevel String?
+  createdAt       DateTime @default(now())
+
+  @@index([network, status])
+}
+
+model SelectiveAuditRecord {
+  id                     String   @id @default(cuid())
+  network                String   @default("testnet")
+  txHash                 String
+  txKeyEncrypted         String // AES-256-GCM ciphertext; the key is only in the auditor link fragment
+  recipientAddress       String
+  recipientBns           String?
+  disclosedAmount        String
+  amountAtomic           String
+  tokenId                String
+  tokenTicker            String
+  tokenDecimals          Int
+  invoiceId              String?
+  auditorPasscode        String? // scrypt hash; gates GET of the record
+  issuerAddress          String?
+  issuerSignature        String?
+  packageJson            String // canonical proof package without the tx key
+  packageHash            String
+  assetVerificationLevel String?
+  verifiedBlockHeight    Int?
+  createdAt              DateTime @default(now())
+
+  @@index([txHash])
+}
+
+model X402PaymentNonce {
+  nonce            String    @id
+  network          String    @default("testnet")
+  resourcePath     String
+  requiredAmount   String
+  tokenTicker      String
+  tokenId          String    @default("BDX")
+  recipientAddress String    @default("")
+  isConsumed       Boolean   @default(false)
+  consumedByTxHash String?   @unique // one payment can never unlock two challenges
+  agentBns         String?
+  expiresAt        DateTime
+  consumedAt       DateTime?
+  createdAt        DateTime  @default(now())
+
+  @@index([expiresAt])
+}
+
+/// Idempotent payroll execution. Recipients and amounts are NOT stored: the
+/// client resends the same payload on resume and the server checks payloadHash.
+model PayrollBatchJob {
+  id                String   @id @default(cuid())
+  idempotencyKey    String   @unique
+  network           String
+  status            String   @default("CREATED") // CREATED | SUBMITTED | WAITING_UTXO_UNLOCK | CONFIRMED | FAILED
+  payloadHash       String
+  useFlash          Boolean  @default(false)
+  totalChunks       Int
+  recipientsCount   Int
+  chunksJson        String   @default("[]") // [{ index, status, txHashes, recipientIds, feeAtomic, burnedAtomic }]
+  txHashesJson      String   @default("[]")
+  feeTotalAtomic    String   @default("0")
+  burnedAtomic      String   @default("0")
+  lockedUntilHeight Int?
+  lastError         String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([network, status])
+}
+
+/// Single-use login challenges (wallet signature over a server nonce).
+model AuthChallenge {
+  nonce      String   @id
+  network    String
+  address    String
+  statement  String
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime @default(now())
+}
+
+/// Fee and burn log used by the dashboard telemetry.
+model ChainActivity {
+  id           String   @id @default(cuid())
+  network      String
+  kind         String // PAYROLL | TOKEN_DEPLOY | X402 | INVOICE | BNS
+  txHash       String
+  feeAtomic    String   @default("0")
+  burnedAtomic String   @default("0")
+  tokenId      String?
+  volumeAtomic String   @default("0")
+  createdAt    DateTime @default(now())
+
+  @@unique([network, kind, txHash])
+  @@index([network, kind])
+}

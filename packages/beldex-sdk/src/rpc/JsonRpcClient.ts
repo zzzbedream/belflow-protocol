@@ -9,6 +9,8 @@ export interface JsonRpcClientOptions {
   password?: string;
   timeoutMs?: number;
   fetch?: typeof fetch;
+  /** Path appended to the base URL for JSON-RPC calls. Defaults to "/json_rpc"; use "" to post to `url` as is. */
+  rpcPath?: string;
 }
 
 interface JsonRpcEnvelope<T> {
@@ -22,6 +24,7 @@ const HTTP_UNAUTHORIZED = 401;
 /** Typed JSON-RPC 2.0 client for beldexd and beldex-wallet-rpc. */
 export class JsonRpcClient {
   private readonly baseUrl: string;
+  private readonly rpcPath: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
   private challenge: DigestChallenge | null = null;
@@ -29,7 +32,8 @@ export class JsonRpcClient {
   private requestId = 0;
 
   constructor(private readonly options: JsonRpcClientOptions) {
-    this.baseUrl = options.url.replace(/\/+$/, '').replace(/\/json_rpc$/, '');
+    this.rpcPath = options.rpcPath ?? '/json_rpc';
+    this.baseUrl = options.rpcPath === undefined ? options.url.replace(/\/+$/, '').replace(/\/json_rpc$/, '') : options.url;
     this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
@@ -42,7 +46,7 @@ export class JsonRpcClient {
   async call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     this.requestId += 1;
     const body = stringifyJsonSafe({ jsonrpc: '2.0', id: String(this.requestId), method, params });
-    const envelope = await this.post<JsonRpcEnvelope<T>>('/json_rpc', body, method);
+    const envelope = await this.post<JsonRpcEnvelope<T>>(this.rpcPath, body, method);
     if (envelope.error) throw new RpcError(method, envelope.error.code, envelope.error.message);
     if (envelope.result === undefined) throw new RpcTransportError(method, 'Response has no result.');
     return envelope.result;

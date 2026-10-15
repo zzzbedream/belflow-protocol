@@ -165,6 +165,17 @@ describe('mock JSON-RPC bridge', () => {
     expect(saves()).toBeGreaterThan(4);
   });
 
+  it('posts to the bridge URL exactly as given (query string included)', async () => {
+    const urls: string[] = [];
+    const { api } = setup();
+    const http = new HttpMockChainApi('/api/rpc?network=mock-devnet', (async (input: RequestInfo | URL, init?: RequestInit) => {
+      urls.push(String(input));
+      return new Response(JSON.stringify(await dispatchMockRpc(api, JSON.parse(String(init?.body)))));
+    }) as typeof fetch);
+    await http.getInfo();
+    expect(urls).toEqual(['/api/rpc?network=mock-devnet']);
+  });
+
   it('maps typed errors across the wire', async () => {
     const { http } = setup();
     const treasury = await http.createAccount('treasury');

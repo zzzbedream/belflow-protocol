@@ -1,4 +1,4 @@
-import { BelflowError, FundsLockedError, InsufficientFundsError, ValidationError } from '../errors';
+import { ValidationError, belflowErrorCode } from '../errors';
 import { MOCK_RPC_ERRORS, type MockChainApi, type MockOutputDto } from './api';
 
 // Server-side JSON-RPC dispatcher for "mock_*" methods. Every parameter is
@@ -99,10 +99,12 @@ export interface JsonRpcResponse {
 }
 
 function toRpcError(error: unknown): { code: number; message: string } {
-  if (error instanceof FundsLockedError) return { code: MOCK_RPC_ERRORS.fundsLocked, message: error.message };
-  if (error instanceof InsufficientFundsError) return { code: MOCK_RPC_ERRORS.insufficientFunds, message: error.message };
-  if (error instanceof ValidationError) return { code: MOCK_RPC_ERRORS.validation, message: error.message };
-  if (error instanceof BelflowError) return { code: MOCK_RPC_ERRORS.validation, message: error.message };
+  // Codes, not instanceof: the chain may live in another copy of this module.
+  const code = belflowErrorCode(error);
+  const message = (error as Error | undefined)?.message ?? '';
+  if (code === 'FUNDS_LOCKED') return { code: MOCK_RPC_ERRORS.fundsLocked, message };
+  if (code === 'INSUFFICIENT_FUNDS') return { code: MOCK_RPC_ERRORS.insufficientFunds, message };
+  if (code !== undefined && error instanceof Error && error.name !== 'Error') return { code: MOCK_RPC_ERRORS.validation, message };
   return { code: -32603, message: 'Internal mock chain error.' };
 }
 

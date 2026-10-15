@@ -138,6 +138,8 @@ export class WalletRpcProvider implements IBeldexProvider {
         decimals: params.decimals,
         totalSupply: formatUnits(supply, params.decimals),
         isNativeBdx: false,
+        deployTxHash: deployed.tx_hash,
+        deployFeeAtomic: toBigIntAmount(deployed.tx_fee).toString(),
       };
     } finally {
       await cleanup();

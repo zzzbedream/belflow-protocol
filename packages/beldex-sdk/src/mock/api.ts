@@ -156,7 +156,7 @@ export class HttpMockChainApi implements MockChainApi {
   private readonly client: JsonRpcClient;
 
   constructor(url: string, fetchImpl?: typeof fetch) {
-    this.client = new JsonRpcClient({ url, ...(fetchImpl ? { fetch: fetchImpl } : {}) });
+    this.client = new JsonRpcClient({ url, rpcPath: '', ...(fetchImpl ? { fetch: fetchImpl } : {}) });
   }
 
   private async call<T>(method: string, params: Record<string, unknown>): Promise<T> {

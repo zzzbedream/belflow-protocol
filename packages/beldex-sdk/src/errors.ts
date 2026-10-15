@@ -11,6 +11,16 @@ export class BelflowError extends Error {
   }
 }
 
+/**
+ * Reads a BelflowError code without relying on `instanceof`, which breaks
+ * when bundlers load the SDK more than once (e.g. per-route bundles).
+ */
+export function belflowErrorCode(error: unknown): string | undefined {
+  if (!(error instanceof Error)) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
 export class UnsupportedCapabilityError extends BelflowError {
   constructor(
     readonly capability: keyof ProviderCapabilities,

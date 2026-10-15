@@ -37,6 +37,9 @@ export interface PrivacyTokenMetadata {
   decimals: number;
   totalSupply?: string;
   isNativeBdx: boolean;
+  /** Set by mintPrivacyToken: the deploy transaction and its fee (atomic BDX). */
+  deployTxHash?: string;
+  deployFeeAtomic?: string;
 }
 
 export interface BNSResolution {

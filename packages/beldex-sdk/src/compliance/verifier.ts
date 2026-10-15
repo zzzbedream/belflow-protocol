@@ -10,6 +10,61 @@ export function normalizeAssetId(assetId: string): string {
 }
 
 /**
+ * Receiver-side verification when the payer cannot export a tx key (browser
+ * extension checkout). The merchant's own wallet reports what it received;
+ * the decoded tx is the fallback for asset attribution.
+ */
+export async function verifyReceivedPayment(
+  claim: Omit<PaymentClaim, 'txKey'>,
+  sources: Pick<VerificationSources, 'receiverTransfers' | 'inspectTx'>,
+  options: Pick<VerifyPaymentOptions, 'amountMatch' | 'allowFlashInPool'>,
+): Promise<PaymentVerification> {
+  if (claim.amountAtomic <= 0n) throw new ValidationError('Claimed amount must be positive.');
+  const assetId = normalizeAssetId(claim.assetId);
+  const failures: VerificationFailure[] = [];
+  const notes: string[] = [];
+  const incoming = sources.receiverTransfers
+    ? await attempt('get_transfer_by_txid', notes, () => sources.receiverTransfers!(claim.txHash.toLowerCase(), claim.recipientAddress))
+    : null;
+  const inspection = sources.inspectTx ? await attempt('get_transactions', notes, () => sources.inspectTx!(claim.txHash.toLowerCase())) : null;
+
+  const entries = incoming ?? [];
+  const received = entries.reduce((sum, entry) => sum + entry.amountAtomic, 0n);
+  let level: AssetVerificationLevel | null = null;
+  const tagged = entries.filter((entry) => entry.assetId !== undefined);
+  if (tagged.length > 0 && tagged.length === entries.length) {
+    if (tagged.every((entry) => normalizeAssetId(entry.assetId as string) === assetId)) level = 'CRYPTOGRAPHIC_FULL';
+    else failures.push('ASSET_MISMATCH');
+  }
+  const daemonAssets = inspection?.assetIds ? [...new Set(inspection.assetIds.map(normalizeAssetId))] : null;
+  if (daemonAssets) {
+    if (!daemonAssets.includes(assetId)) failures.push('ASSET_MISMATCH');
+    else if (daemonAssets.length === 1 && level === null) level = 'DAEMON_EXTRACTED';
+  }
+
+  if (received === 0n) failures.push('NO_OUTPUT_FOR_RECIPIENT');
+  else if (options.amountMatch === 'exact' && received !== claim.amountAtomic) failures.push('AMOUNT_MISMATCH');
+  else if (options.amountMatch === 'at-least' && received < claim.amountAtomic) failures.push('AMOUNT_INSUFFICIENT');
+
+  const inPool = inspection?.inPool ?? false;
+  const isFlash = inspection?.isFlash ?? false;
+  if (inPool && !(options.allowFlashInPool && isFlash)) failures.push('NOT_CONFIRMED');
+  if (level === null && !failures.includes('ASSET_MISMATCH')) failures.push('ASSET_UNVERIFIABLE');
+  const unique = [...new Set(failures)];
+  return {
+    isValid: unique.length === 0,
+    receivedAtomic: received,
+    inPool,
+    isFlash,
+    confirmations: 0,
+    blockHeight: inspection?.blockHeight ?? null,
+    assetVerificationLevel: unique.length === 0 ? level : null,
+    failures: unique,
+    notes,
+  };
+}
+
+/**
  * PRD-compatible `verifySelectiveAuditProof` result. Without an expected asset
  * and amount the payment cannot be judged, so it is reported invalid with the
  * raw received amount for display only.

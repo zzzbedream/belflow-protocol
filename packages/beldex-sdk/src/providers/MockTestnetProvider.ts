@@ -87,7 +87,7 @@ export class MockTestnetProvider implements IBeldexProvider {
   ): Promise<PrivacyTokenMetadata> {
     const owner = this.requireAddress();
     const supplyAtomic = parseUnits(params.totalSupply ?? '0', params.decimals);
-    const { asset } = await this.api.deployAsset(
+    const { asset, tx } = await this.api.deployAsset(
       owner,
       { ticker: params.ticker, name: params.name, decimals: params.decimals, supplyAtomic: supplyAtomic.toString() },
       false,
@@ -99,6 +99,8 @@ export class MockTestnetProvider implements IBeldexProvider {
       decimals: asset.decimals,
       totalSupply: formatUnits(BigInt(asset.currentSupply), asset.decimals),
       isNativeBdx: false,
+      deployTxHash: tx.txHash,
+      deployFeeAtomic: tx.fee,
     };
   }
 

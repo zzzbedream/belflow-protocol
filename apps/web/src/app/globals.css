@@ -1,0 +1,211 @@
+@import "tailwindcss";
+
+/* ------------------------------------------------------------------ tokens */
+:root {
+  color-scheme: light;
+  --paper: oklch(97.4% 0.009 85);
+  --paper-2: oklch(94.2% 0.013 85);
+  --paper-3: oklch(90.5% 0.016 85);
+  --ink: oklch(19% 0.022 265);
+  --ink-2: oklch(40% 0.02 265);
+  --ink-3: oklch(56% 0.016 265);
+  --rule: oklch(85.5% 0.016 85);
+  --rule-strong: oklch(72% 0.02 85);
+  --vault: oklch(43% 0.17 288);
+  --vault-soft: oklch(93% 0.035 288);
+  --verified: oklch(50% 0.13 155);
+  --verified-soft: oklch(93.5% 0.045 155);
+  --flash: oklch(70% 0.16 65);
+  --flash-soft: oklch(94% 0.06 75);
+  --danger: oklch(53% 0.2 27);
+  --danger-soft: oklch(94% 0.04 27);
+  --redact: oklch(19% 0.022 265);
+  --shadow: 0 1px 0 oklch(19% 0.02 265 / 0.04), 0 12px 32px -18px oklch(19% 0.02 265 / 0.35);
+  --font-display: var(--font-grotesk), ui-sans-serif, system-ui, sans-serif;
+  --font-figures: var(--font-mono), ui-monospace, SFMono-Regular, monospace;
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-fast: 150ms;
+  --duration-normal: 320ms;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --paper: oklch(16.5% 0.016 265);
+    --paper-2: oklch(20.5% 0.019 265);
+    --paper-3: oklch(25% 0.022 265);
+    --ink: oklch(94.5% 0.012 85);
+    --ink-2: oklch(78% 0.014 85);
+    --ink-3: oklch(62% 0.014 265);
+    --rule: oklch(30% 0.02 265);
+    --rule-strong: oklch(42% 0.022 265);
+    --vault: oklch(74% 0.14 288);
+    --vault-soft: oklch(28% 0.07 288);
+    --verified: oklch(75% 0.14 155);
+    --verified-soft: oklch(27% 0.06 155);
+    --flash: oklch(80% 0.15 75);
+    --flash-soft: oklch(30% 0.07 70);
+    --danger: oklch(70% 0.17 27);
+    --danger-soft: oklch(28% 0.07 27);
+    --redact: oklch(88% 0.012 85);
+    --shadow: 0 1px 0 oklch(0% 0 0 / 0.3), 0 16px 40px -20px oklch(0% 0 0 / 0.8);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: oklch(16.5% 0.016 265);
+  --paper-2: oklch(20.5% 0.019 265);
+  --paper-3: oklch(25% 0.022 265);
+  --ink: oklch(94.5% 0.012 85);
+  --ink-2: oklch(78% 0.014 85);
+  --ink-3: oklch(62% 0.014 265);
+  --rule: oklch(30% 0.02 265);
+  --rule-strong: oklch(42% 0.022 265);
+  --vault: oklch(74% 0.14 288);
+  --vault-soft: oklch(28% 0.07 288);
+  --verified: oklch(75% 0.14 155);
+  --verified-soft: oklch(27% 0.06 155);
+  --flash: oklch(80% 0.15 75);
+  --flash-soft: oklch(30% 0.07 70);
+  --danger: oklch(70% 0.17 27);
+  --danger-soft: oklch(28% 0.07 27);
+  --redact: oklch(88% 0.012 85);
+}
+
+@theme inline {
+  --color-paper: var(--paper);
+  --color-paper-2: var(--paper-2);
+  --color-paper-3: var(--paper-3);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-rule: var(--rule);
+  --color-rule-strong: var(--rule-strong);
+  --color-vault: var(--vault);
+  --color-vault-soft: var(--vault-soft);
+  --color-verified: var(--verified);
+  --color-verified-soft: var(--verified-soft);
+  --color-flash: var(--flash);
+  --color-flash-soft: var(--flash-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --font-display: var(--font-display);
+  --font-figures: var(--font-figures);
+  --text-hero: clamp(2.25rem, 1.4rem + 3.2vw, 4.25rem);
+}
+
+/* -------------------------------------------------------------------- base */
+html,
+body {
+  background: var(--paper);
+  color: var(--ink);
+}
+
+body {
+  font-family: var(--font-display);
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  min-height: 100dvh;
+}
+
+/* Paper grain: fixed, non-interactive, very low contrast. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.35;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.06 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) body::before {
+    mix-blend-mode: screen;
+    opacity: 0.18;
+  }
+}
+
+.figures {
+  font-family: var(--font-figures);
+  font-variant-numeric: tabular-nums slashed-zero;
+  letter-spacing: -0.01em;
+}
+
+/* Ledger hairline: a double rule like an accounting book total line. */
+.ledger-rule {
+  border-bottom: 1px solid var(--rule);
+  box-shadow: 0 3px 0 -2px var(--rule);
+}
+
+/* Redaction bar for confidential figures. */
+.redacted {
+  position: relative;
+  color: transparent;
+  border-radius: 2px;
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--redact) 0 6px,
+    color-mix(in oklch, var(--redact) 86%, transparent) 6px 8px
+  );
+  user-select: none;
+  transition: opacity var(--duration-normal) var(--ease-out-expo);
+}
+
+:focus-visible {
+  outline: 2px solid var(--vault);
+  outline-offset: 2px;
+}
+
+@keyframes seal-in {
+  from {
+    transform: scale(1.12) rotate(-8deg);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1) rotate(-4deg);
+    opacity: 1;
+  }
+}
+
+@keyframes rise {
+  from {
+    transform: translateY(6px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.animate-seal {
+  animation: seal-in 520ms var(--ease-out-expo) both;
+}
+
+.animate-rise {
+  animation: rise var(--duration-normal) var(--ease-out-expo) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-seal,
+  .animate-rise {
+    animation: none;
+  }
+  .redacted {
+    transition: none;
+  }
+}
+
+@media print {
+  body::before,
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: white;
+    color: black;
+  }
+}

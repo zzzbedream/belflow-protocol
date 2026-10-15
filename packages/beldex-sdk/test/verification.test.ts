@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildPaymentDeclaration, canonicalJson, parsePaymentDeclaration } from '../src/compliance/declaration';
 import { buildAuditProofPackage, verifyPackageIntegrity } from '../src/compliance/proof';
 import { createExplorerTxInspector, extractAssetIds, inspectionFromDecodedTx } from '../src/compliance/txInspection';
-import { verifyPayment, type VerificationSources } from '../src/compliance/verifier';
+import { verifyPayment, verifyReceivedPayment, type VerificationSources } from '../src/compliance/verifier';
 import type { TxKeyCheck } from '../src/types';
 import { HASH_A } from './helpers';
 
@@ -178,6 +178,49 @@ describe('verifyPayment (dual verification)', () => {
     );
     expect(result.failures).toEqual(['ASSET_UNVERIFIABLE']);
     expect(result.notes[0]).toMatch(/several assets/);
+  });
+});
+
+describe('verifyReceivedPayment (receiver side, no tx key)', () => {
+  const base = { txHash: HASH_A, recipientAddress: 'addr', assetId: USD, amountAtomic: 500_000n };
+  const pool = { assetIds: null, isFlash: true, inPool: true, blockHeight: null };
+
+  it('accepts a flash payment attributed by the receiving wallet', async () => {
+    const result = await verifyReceivedPayment(
+      base,
+      { receiverTransfers: async () => [{ assetId: USD, amountAtomic: 500_000n }], inspectTx: async () => pool },
+      { amountMatch: 'at-least', allowFlashInPool: true },
+    );
+    expect(result).toMatchObject({ isValid: true, assetVerificationLevel: 'CRYPTOGRAPHIC_FULL', isFlash: true });
+  });
+
+  it('rejects untagged, wrong-asset, short and unconfirmed payments', async () => {
+    const untagged = await verifyReceivedPayment(base, { receiverTransfers: async () => [{ amountAtomic: 500_000n }] }, { amountMatch: 'exact' });
+    expect(untagged.failures).toEqual(['ASSET_UNVERIFIABLE']);
+    const wrong = await verifyReceivedPayment(base, { receiverTransfers: async () => [{ assetId: 'BDX', amountAtomic: 500_000n }] }, { amountMatch: 'exact' });
+    expect(wrong.failures).toContain('ASSET_MISMATCH');
+    const short = await verifyReceivedPayment(base, { receiverTransfers: async () => [{ assetId: USD, amountAtomic: 1n }] }, { amountMatch: 'at-least' });
+    expect(short.failures).toEqual(['AMOUNT_INSUFFICIENT']);
+    const exact = await verifyReceivedPayment(base, { receiverTransfers: async () => [{ assetId: USD, amountAtomic: 1n }] }, { amountMatch: 'exact' });
+    expect(exact.failures).toEqual(['AMOUNT_MISMATCH']);
+    const none = await verifyReceivedPayment(base, { inspectTx: async () => ({ ...pool, isFlash: false, assetIds: [USD] }) }, { amountMatch: 'exact' });
+    expect(none.failures).toEqual(['NO_OUTPUT_FOR_RECIPIENT', 'NOT_CONFIRMED']);
+    const daemonOnly = await verifyReceivedPayment(
+      base,
+      {
+        receiverTransfers: async () => [{ amountAtomic: 500_000n }],
+        inspectTx: async () => ({ assetIds: [USD], isFlash: false, inPool: false, blockHeight: 3 }),
+      },
+      { amountMatch: 'exact' },
+    );
+    expect(daemonOnly.assetVerificationLevel).toBe('DAEMON_EXTRACTED');
+    const daemonWrong = await verifyReceivedPayment(
+      base,
+      { receiverTransfers: async () => [{ amountAtomic: 500_000n }], inspectTx: async () => ({ assetIds: ['BDX'], isFlash: false, inPool: false, blockHeight: 3 }) },
+      { amountMatch: 'exact' },
+    );
+    expect(daemonWrong.failures).toContain('ASSET_MISMATCH');
+    await expect(verifyReceivedPayment({ ...base, amountAtomic: 0n }, {}, { amountMatch: 'exact' })).rejects.toThrow(/positive/);
   });
 });
 
