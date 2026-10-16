@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { GET as proofGet } from '@/app/api/audit/[proofId]/route';
-import { createProof, getProof, verifyProof } from '@/server/audit';
+import { createProof, getProof, inspectProof, verifyProof } from '@/server/audit';
 import { db } from '@/server/db';
 import { runPayroll } from '@/server/payroll';
 import { ensureBusd, employeeRecipients, uuid } from './helpers';
@@ -73,5 +73,19 @@ describe('selective audit proofs', () => {
     expect(unlocked.status).toBe(200);
     const missing = await proofGet(new Request('http://localhost:3000/api/audit/x'), { params: Promise.resolve({ proofId: uuid() }) });
     expect(missing.status).toBe(404);
+  });
+
+  it('inspects tampered claims read-only: the real claim passes, a swapped asset or amount fails', async () => {
+    const created = await createProof(baseInput());
+    const base = { proofId: created.proofId, txKey: receipt.txKey };
+    await expect(inspectProof({ ...base, tokenId: receipt.tokenId, amountAtomic: '1250500000' })).resolves.toMatchObject({ isValid: true });
+    const wrongAsset = await inspectProof({ ...base, tokenId: 'BDX', amountAtomic: '1250500000' });
+    expect(wrongAsset.isValid).toBe(false);
+    expect(wrongAsset.failures).toContain('ASSET_MISMATCH');
+    const wrongAmount = await inspectProof({ ...base, tokenId: receipt.tokenId, amountAtomic: '1' });
+    expect(wrongAmount.isValid).toBe(false);
+    await expect(inspectProof({ ...base, tokenId: receipt.tokenId, amountAtomic: '0' })).rejects.toThrow(/positive/);
+    const stored = await db.selectiveAuditRecord.findUniqueOrThrow({ where: { id: created.proofId } });
+    expect(JSON.parse(stored.packageJson).tokenId).toBe(receipt.tokenId);
   });
 });

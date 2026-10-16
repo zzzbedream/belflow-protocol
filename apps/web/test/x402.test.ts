@@ -86,4 +86,13 @@ describe('x402 demo resource and agent', () => {
     expect(result.trace.at(-1)).toMatchObject({ type: 'error' });
     expect(String(result.trace.at(-1)?.detail.message)).toMatch(/Budget/);
   });
+
+  it('refuses a wrong-asset payment (BDX for a bUSD price) with asset_mismatch', async () => {
+    vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => demoGet(new Request(input, init))) as typeof fetch);
+    mockRuntime().chain.mineBlocks(3);
+    const result = await runAgent({ network: 'mock-devnet', calls: 1, maxPerCall: '1', budget: '2', useFlash: true, attack: 'wrong-asset' }, 'http://localhost:3000');
+    expect(result.trace.filter((e) => e.type === 'paid')).toHaveLength(1);
+    expect(result.responses.at(-1)).toMatchObject({ error: 'asset_mismatch' });
+    expect(result.trace.find((e) => e.type === 'response')?.detail.status).toBe(402);
+  });
 });

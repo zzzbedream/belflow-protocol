@@ -181,6 +181,36 @@ export async function hasPasscode(proofId: string): Promise<boolean> {
   return record.auditorPasscode !== null;
 }
 
+export const inspectProofSchema = z
+  .object({
+    proofId: z.uuid(),
+    txKey: z.string().regex(HEX64),
+    passcode: z.string().max(128).optional(),
+    /** The (possibly tampered) claim to test against the chain. */
+    tokenId: z.string().regex(/^(BDX|[0-9a-f]{64})$/),
+    amountAtomic: z.string().regex(/^\d{1,30}$/),
+  })
+  .strict();
+
+/**
+ * Read-only "what if" check for the auditor's tamper simulator: verifies an
+ * arbitrary asset/amount claim for the proof's tx and recipient. It changes
+ * nothing and never re-issues a proof; a forged claim must fail here.
+ */
+export async function inspectProof(input: z.infer<typeof inspectProofSchema>) {
+  const record = await loadRecord(input.proofId, input.passcode);
+  const pkg = JSON.parse(record.packageJson) as AuditProofPackage;
+  const runtime = await getRuntime(record.network as AppNetwork);
+  const amountAtomic = BigInt(input.amountAtomic);
+  if (amountAtomic <= 0n) throw new HttpError(400, 'Amount must be positive.', 'VALIDATION');
+  const result = await verifyPayment(
+    { txHash: pkg.txHash, txKey: input.txKey, recipientAddress: pkg.recipientAddress, assetId: input.tokenId, amountAtomic },
+    runtime.verification,
+    { amountMatch: 'exact' },
+  );
+  return { isValid: result.isValid, failures: result.failures, assetVerificationLevel: result.assetVerificationLevel };
+}
+
 /** Live re-verification against the node (check_tx_key + asset layer + issuer signature). */
 export async function verifyProof(input: z.infer<typeof verifyProofSchema>): Promise<ProofVerificationDto> {
   const record = await loadRecord(input.proofId, input.passcode);

@@ -5,6 +5,7 @@ import { Download, Printer, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { useParams } from 'next/navigation';
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { downloadJson } from '@/components/compliance/AuditProofCard';
+import { TamperSimulator } from '@/components/compliance/TamperSimulator';
 import { Amount } from '@/components/ui/Amount';
 import { Badge, statusTone } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -210,6 +211,7 @@ export default function AuditorPortal() {
               </dd>
             </dl>
 
+            <TamperSimulator proofId={proofId} pkg={pkg} txKey={txKey} passcode={passcode} />
             <details className="rounded-[8px] border border-rule bg-paper-2 px-3 py-2 text-xs text-ink-2">
               <summary className="cursor-pointer font-medium text-ink">Verify independently</summary>
               <p className="mt-2 leading-relaxed">

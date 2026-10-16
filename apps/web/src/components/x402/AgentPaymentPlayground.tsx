@@ -72,6 +72,7 @@ export function AgentPaymentPlayground({ price, onRun }: { price?: { amount: str
   const [maxPerCall, setMaxPerCall] = useState('1');
   const [budget, setBudget] = useState('2');
   const [calls, setCalls] = useState(1);
+  const [isAttack, setIsAttack] = useState(false);
   const [run, setRun] = useState<AgentRun | null>(null);
   const [rawStatus, setRawStatus] = useState<{ status: number; headers: Array<[string, string]> } | null>(null);
   const [isBusy, setIsBusy] = useState(false);
@@ -93,7 +94,7 @@ export function AgentPaymentPlayground({ price, onRun }: { price?: { amount: str
     setError(null);
     setRun(null);
     try {
-      setRun(await apiPost<AgentRun>('/api/x402/agent', { network, calls, maxPerCall, budget, useFlash: true }));
+      setRun(await apiPost<AgentRun>('/api/x402/agent', { network, calls, maxPerCall, budget, useFlash: true, attack: isAttack ? 'wrong-asset' : 'none' }));
       onRun();
     } catch (cause) {
       setError(errorMessage(cause));
@@ -131,6 +132,12 @@ export function AgentPaymentPlayground({ price, onRun }: { price?: { amount: str
           </Field>
         </div>
         <p className="text-xs text-ink-3">The agent refuses to pay above its cap, beyond its budget or to a payee not on its BNS allowlist (oracle-provider.bdx).</p>
+        <label className="flex cursor-pointer items-start gap-2 rounded-[8px] border border-danger/30 bg-danger-soft/60 px-3 py-2 text-xs text-ink-2">
+          <input type="checkbox" className="mt-0.5 accent-[var(--danger)]" checked={isAttack} onChange={(e) => setIsAttack(e.target.checked)} data-testid="attack-wrong-asset" />
+          <span>
+            <span className="font-medium text-danger">Attack: pay with the wrong asset.</span> The agent pays the same number of BDX instead of bUSD. The server must answer <code className="figures">asset_mismatch</code>.
+          </span>
+        </label>
         <div className="flex flex-wrap gap-2">
           <Button onClick={launch} disabled={isBusy} variant="vault" size="lg" data-testid="run-agent">
             <Play className="size-4" aria-hidden /> {isBusy ? 'Agent paying…' : 'Run agent'}
@@ -166,6 +173,11 @@ export function AgentPaymentPlayground({ price, onRun }: { price?: { amount: str
               <TraceLine key={`${event.at}-${index}`} event={event} start={start} />
             ))}
           </ol>
+        )}
+        {(lastResponse as { error?: string } | null)?.error === 'asset_mismatch' && (
+          <p className="mt-4 rounded-[8px] border border-danger/60 bg-danger/20 px-3 py-2 text-sm font-medium text-paper" data-testid="asset-mismatch-alert">
+            Rejected: asset_mismatch. The tx paid BDX where bUSD was quoted; dual verification refused to unlock the resource.
+          </p>
         )}
         {lastResponse != null && (
           <pre className="figures mt-4 max-h-64 overflow-auto rounded-[8px] bg-paper/5 p-3 text-[0.68rem] leading-relaxed text-paper/80">

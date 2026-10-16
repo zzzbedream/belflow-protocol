@@ -10,6 +10,8 @@ next-env.d.ts
 # Local state: databases, mock chain ledger, generated Prisma client
 *.db
 *.db-journal
+*.db-shm
+*.db-wal
 .data/
 apps/web/src/generated/
 

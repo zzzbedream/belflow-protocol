@@ -3,6 +3,7 @@ import { BDX_DECIMALS, CHANGE_UNLOCK_BLOCKS, NATIVE_TOKEN_ID, formatUnits, parse
 import {
   createAgentFetch,
   providerPayer,
+  type AgentPayer,
   type AgentEvent,
   type ConsumeResult,
   type NonceStore,
@@ -14,6 +15,7 @@ import { recordActivity } from './activity';
 import { claimSettlement, releaseSettlement, sweepExpired } from './settlement';
 import { db } from './db';
 import { serverEnv } from './env';
+import { HttpError } from './errors';
 import { MOCK_ACCOUNTS } from './mockChain';
 import { getRuntime, networkSchema, type AppNetwork } from './runtime';
 import { findToken } from './tokens';
@@ -120,6 +122,8 @@ export const agentRunSchema = z
     maxPerCall: z.string().regex(/^\d{1,12}(\.\d{1,12})?$/),
     budget: z.string().regex(/^\d{1,12}(\.\d{1,12})?$/),
     useFlash: z.boolean().default(true),
+    /** Demo of the AUD-02 attack: the agent pays BDX against a Privacy Token price. */
+    attack: z.enum(['none', 'wrong-asset']).default('none'),
   })
   .strict();
 
@@ -157,13 +161,23 @@ function serialize(event: AgentEvent): AgentTraceEvent['detail'] {
  * resource over HTTP, receives 402, checks its spend policy, pays with a
  * Flash transaction and retries with the proof.
  */
-export async function runAgent(input: z.infer<typeof agentRunSchema>, origin: string) {
+export async function runAgent(rawInput: z.input<typeof agentRunSchema>, origin: string) {
+  const input = agentRunSchema.parse(rawInput);
   const runtime = await getRuntime(input.network);
   const config = await x402Config(input.network);
   const { tokenId, decimals, tokenTicker } = config.price;
   const trace: AgentTraceEvent[] = [];
+  if (input.attack === 'wrong-asset' && tokenId === NATIVE_TOKEN_ID) {
+    throw new HttpError(400, 'The wrong-asset demo needs a Privacy Token price (deploy bUSD on this network first).', 'VALIDATION');
+  }
+  const honest = providerPayer(runtime.agent, { useFlash: input.useFlash });
+  // Attack demo: pay the same number of BDX instead of the quoted token.
+  const payer: AgentPayer =
+    input.attack === 'wrong-asset'
+      ? { pay: (challenge) => honest.pay({ ...challenge, tokenId: NATIVE_TOKEN_ID, tokenTicker: 'BDX', decimals: BDX_DECIMALS }) }
+      : honest;
   const agentFetch = createAgentFetch({
-    payer: providerPayer(runtime.agent, { useFlash: input.useFlash }),
+    payer,
     policy: {
       networks: [input.network],
       maxPerCall: { [tokenId]: parseUnits(input.maxPerCall, decimals) },

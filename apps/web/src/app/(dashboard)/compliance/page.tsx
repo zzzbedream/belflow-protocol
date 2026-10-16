@@ -14,6 +14,8 @@ import { Notice } from '@/components/ui/Notice';
 import { Panel } from '@/components/ui/Panel';
 import { apiPost, errorMessage } from '@/lib/api';
 import { encryptForLink, generateLinkKey } from '@/lib/crypto';
+import type { TokenDto } from '@/lib/types';
+import { useApi } from '@/lib/useApi';
 import { loadReceipts, type PaymentReceipt } from '@/lib/vault';
 import { useBeldexStore } from '@/store/useBeldexStore';
 
@@ -24,7 +26,7 @@ interface CreateProofResponse {
   blockHeight: number | null;
 }
 
-async function issueProof(receipt: PaymentReceipt, passcode: string): Promise<IssuedProof> {
+async function issueProof(receipt: PaymentReceipt, passcode: string, claimTokenId?: string): Promise<IssuedProof> {
   const linkKey = await generateLinkKey();
   const txKeyEncrypted = await encryptForLink(linkKey, receipt.txKey);
   const created = await apiPost<CreateProofResponse>('/api/audit', {
@@ -34,7 +36,7 @@ async function issueProof(receipt: PaymentReceipt, passcode: string): Promise<Is
     txKeyEncrypted,
     recipientAddress: receipt.recipientAddress,
     ...(receipt.recipientBns ? { recipientBns: receipt.recipientBns } : {}),
-    tokenId: receipt.tokenId,
+    tokenId: claimTokenId ?? receipt.tokenId,
     amount: receipt.amount,
     ...(receipt.memo ? { invoiceReference: receipt.memo.slice(0, 80) } : {}),
     ...(passcode ? { passcode } : {}),
@@ -59,6 +61,8 @@ export default function CompliancePage() {
   const [vaultError, setVaultError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [passcode, setPasscode] = useState('');
+  const [isAttack, setIsAttack] = useState(false);
+  const { data: tokens = [] } = useApi<TokenDto[]>('/api/tokens');
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [proof, setProof] = useState<IssuedProof | null>(null);
@@ -78,7 +82,9 @@ export default function CompliancePage() {
     setError(null);
     setProof(null);
     try {
-      setProof(await issueProof(current, passcode));
+      // Attack demo: claim another asset for the same tx (BDX, or a token if the payment was BDX).
+      const decoy = isAttack ? (current.tokenId === 'BDX' ? tokens.find((t) => !t.isNativeBdx)?.tokenId : 'BDX') : undefined;
+      setProof(await issueProof(current, passcode, decoy));
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -144,6 +150,12 @@ export default function CompliancePage() {
                     <HashChip value={current.txHash} />
                   </dd>
                 </dl>
+                <label className="flex cursor-pointer items-start gap-2 rounded-[8px] border border-danger/30 bg-danger-soft/60 px-3 py-2 text-xs text-ink-2">
+                  <input type="checkbox" className="mt-0.5 accent-[var(--danger)]" checked={isAttack} onChange={(e) => setIsAttack(e.target.checked)} data-testid="attack-claim-asset" />
+                  <span>
+                    <span className="font-medium text-danger">Attack: claim a different asset.</span> Tries to certify this payment as another token. Dual verification must refuse with ASSET_MISMATCH.
+                  </span>
+                </label>
                 <Field label="Auditor passcode (optional)" htmlFor="passcode" hint="Adds a second factor to the link. Stored as a scrypt hash.">
                   <Input id="passcode" type="password" minLength={8} value={passcode} onChange={(e) => setPasscode(e.target.value)} autoComplete="new-password" />
                 </Field>
