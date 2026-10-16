@@ -19,6 +19,8 @@ const schema = z.object({
   BELFLOW_PUBLIC_ORIGIN: z.url().default('http://localhost:3000'),
   BELFLOW_MOCK_SEED: z.string().min(1).default('belflow-mock-devnet'),
   BELFLOW_MOCK_STATE_FILE: z.string().min(1).default('.data/mock-chain.json'),
+  /** Where the mock devnet ledger lives: a local file, or the database (required on serverless hosts). */
+  BELFLOW_MOCK_STATE_STORE: z.enum(['file', 'db']).default(process.env.VERCEL === '1' ? 'db' : 'file'),
   BELDEX_DAEMON_RPC_URL: optionalUrl.default(''),
   BELDEX_WALLET_RPC_URL: optionalUrl.default(''),
   BELDEX_WALLET_RPC_USER: optionalText,

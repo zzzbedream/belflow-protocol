@@ -1,8 +1,10 @@
 import 'server-only';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { LocalMockChainApi, MockChain, parseUnits, BDX_DECIMALS, type MockChainState } from '@belflow/sdk';
+import { LocalMockChainApi, MockChain, parseUnits, BDX_DECIMALS, type MockChainApi, type MockChainState } from '@belflow/sdk';
+import { db } from './db';
 import { serverEnv } from './env';
+import { DbMockChainApi, prismaSnapshotStore } from './mockChainDb';
 
 /** Well-known mock identities. Labels are deterministic account seeds. */
 export const MOCK_ACCOUNTS = {
@@ -20,7 +22,7 @@ interface MockRuntime {
   api: LocalMockChainApi;
 }
 
-const globalForMock = globalThis as unknown as { belflowMock?: MockRuntime };
+const globalForMock = globalThis as unknown as { belflowMock?: MockRuntime; belflowMockDb?: DbMockChainApi };
 
 function stateFile(): string {
   return path.resolve(process.cwd(), serverEnv().BELFLOW_MOCK_STATE_FILE);
@@ -67,7 +69,15 @@ export function mockRuntime(): MockRuntime {
   return globalForMock.belflowMock;
 }
 
-/** Deterministic address of a seeded mock identity. */
-export function mockAddress(label: string): string {
-  return mockRuntime().chain.createAccount(label);
+/**
+ * The mock devnet as the app sees it. File store: the in-process chain
+ * persisted to BELFLOW_MOCK_STATE_FILE. DB store: a snapshot row shared by
+ * every serverless instance, with optimistic concurrency.
+ */
+export function mockApi(): MockChainApi {
+  const env = serverEnv();
+  if (env.BELFLOW_MOCK_STATE_STORE !== 'db') return mockRuntime().api;
+  const seed = env.BELFLOW_MOCK_SEED;
+  globalForMock.belflowMockDb ??= new DbMockChainApi(prismaSnapshotStore(db), { seed, genesis: () => seedChain(new MockChain({ seed })) });
+  return globalForMock.belflowMockDb;
 }

@@ -183,3 +183,13 @@ model SettledTransaction {
   purpose   String // INVOICE:<id> | X402:<nonce>
   createdAt DateTime @default(now())
 }
+
+/// Mock devnet ledger for serverless hosting (BELFLOW_MOCK_STATE_STORE=db).
+/// One row per network; `version` is the optimistic-concurrency counter, bumped
+/// only by mutations (reads never write).
+model MockChainSnapshot {
+  id        String   @id
+  version   Int
+  json      String
+  updatedAt DateTime @updatedAt
+}

@@ -4,7 +4,7 @@ import { recordActivity } from './activity';
 import type { TokenDeployInput } from './assetDescriptor';
 import { db } from './db';
 import { HttpError } from './errors';
-import { mockRuntime } from './mockChain';
+import { mockApi } from './mockChain';
 import { getRuntime, type AppNetwork } from './runtime';
 
 export interface TokenInfo {
@@ -25,7 +25,7 @@ export async function listTokens(network: AppNetwork): Promise<TokenInfo[]> {
     rows.map((row) => [row.tokenId, { tokenId: row.tokenId, ticker: row.ticker, name: row.name, decimals: row.decimals, isNativeBdx: false, creatorAddr: row.creatorAddr }]),
   );
   if (network === 'mock-devnet') {
-    for (const asset of mockRuntime().chain.listAssets()) {
+    for (const asset of await mockApi().listAssets()) {
       if (!tokens.has(asset.assetId)) {
         tokens.set(asset.assetId, { tokenId: asset.assetId, ticker: asset.ticker, name: asset.name, decimals: asset.decimals, isNativeBdx: false, creatorAddr: asset.owner });
       }

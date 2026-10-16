@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "next dev",
-    "build": "prisma generate && next build",
+    "build": "node scripts/prisma-schema.mjs generate && next build",
     "start": "next start",
     "lint": "node --max-old-space-size=4096 ./node_modules/eslint/bin/eslint.js src",
     "typecheck": "prisma generate && tsc --noEmit",
@@ -13,7 +13,8 @@
     "test:coverage": "vitest run --coverage",
     "e2e": "playwright test",
     "db:push": "prisma db push",
-    "db:generate": "prisma generate",
+    "db:generate": "node scripts/prisma-schema.mjs generate",
+    "db:postgres-schema": "node scripts/prisma-schema.mjs write",
     "test:audit": "vitest run --config vitest.audit.config.ts",
     "testnet:deploy": "tsx scripts/testnet-deploy-and-seed.ts"
   },

@@ -16,7 +16,7 @@ import { z } from 'zod';
 import { createAssetDescriptorWriter } from './assetDescriptor';
 import { serverEnv, type ServerEnv } from './env';
 import { notConfigured } from './errors';
-import { MOCK_ACCOUNTS, mockRuntime } from './mockChain';
+import { MOCK_ACCOUNTS, mockApi } from './mockChain';
 
 export const networkSchema = z.enum(['mock-devnet', 'testnet']);
 export type AppNetwork = z.infer<typeof networkSchema>;
@@ -46,7 +46,7 @@ const RPC_TIMEOUT_MS = 120_000;
 const globalCache = globalThis as unknown as { belflowRuntimes?: Map<AppNetwork, Promise<NetworkRuntime>> };
 
 async function buildMock(): Promise<NetworkRuntime> {
-  const { api } = mockRuntime();
+  const api = mockApi();
   const treasury = new MockTestnetProvider({ api, accountLabel: MOCK_ACCOUNTS.treasury.label, faucetBdx: '0' });
   const agent = new MockTestnetProvider({ api, accountLabel: MOCK_ACCOUNTS.agent.label, faucetBdx: MOCK_ACCOUNTS.agent.faucetBdx });
   const { address } = await treasury.connectWallet();

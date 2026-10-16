@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { serverEnv } from '@/server/env';
 import { notConfigured } from '@/server/errors';
 import { assertSameOrigin, rateLimit, readJson, route } from '@/server/http';
-import { mockRuntime } from '@/server/mockChain';
+import { mockApi } from '@/server/mockChain';
 import { networkSchema } from '@/server/runtime';
 
 export const dynamic = 'force-dynamic';
@@ -40,7 +40,7 @@ export const POST = route(async (request: Request) => {
   const body = await readJson(request, requestSchema);
 
   if (network === 'mock-devnet') {
-    return NextResponse.json(await dispatchMockRpc(mockRuntime().api, body));
+    return NextResponse.json(await dispatchMockRpc(mockApi(), body));
   }
 
   const target = Object.hasOwn(TESTNET_ALLOWLIST, body.method) ? TESTNET_ALLOWLIST[body.method] : undefined;

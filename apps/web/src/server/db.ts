@@ -8,7 +8,26 @@ export const db: PrismaClient = globalForPrisma.belflowPrisma ?? new PrismaClien
 
 if (process.env.NODE_ENV !== 'production') globalForPrisma.belflowPrisma = db;
 
-const isSqlite = (process.env.DATABASE_URL ?? '').startsWith('file:');
+const databaseUrl = process.env.DATABASE_URL ?? '';
+const isSqlite = databaseUrl.startsWith('file:');
+
+/** Provider implied by DATABASE_URL, or null when it cannot be told from the scheme. */
+export function urlProvider(url: string): 'sqlite' | 'postgresql' | null {
+  if (url.startsWith('file:')) return 'sqlite';
+  if (/^postgres(ql)?:\/\//.test(url)) return 'postgresql';
+  return null;
+}
+
+// Fail fast (and fail the build, which imports route modules) when the client
+// was generated from the other schema, e.g. a SQLite client against Postgres.
+const expectedProvider = urlProvider(databaseUrl);
+const activeProvider = (db as unknown as { _activeProvider?: string })._activeProvider;
+if (expectedProvider && activeProvider && expectedProvider !== activeProvider) {
+  throw new Error(
+    `DATABASE_URL is a ${expectedProvider} URL but the Prisma client was generated for ${activeProvider}. ` +
+      'Run "pnpm --filter @belflow/web db:generate" with DATABASE_PROVIDER set to match (see docs/DEPLOY_VERCEL.md).',
+  );
+}
 
 /**
  * SQLite only: WAL + a busy timeout so concurrent requests queue instead of

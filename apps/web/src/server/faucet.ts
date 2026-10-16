@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { db } from './db';
 import { serverEnv } from './env';
 import { HttpError, notFound } from './errors';
-import { mockRuntime } from './mockChain';
+import { mockApi } from './mockChain';
 import { getRuntime, networkSchema, type AppNetwork } from './runtime';
 import { findToken } from './tokens';
 
@@ -124,7 +124,7 @@ async function reserveClaim(network: AppNetwork, recipient: string, ipHash: stri
 
 async function sendMock(address: string, tokenId: string | null): Promise<FaucetResult['grants']> {
   const runtime = await getRuntime('mock-devnet');
-  const bdxTx = await mockRuntime().api.faucet(address, parseUnits(FAUCET_GRANT.bdx, BDX_DECIMALS).toString());
+  const bdxTx = await mockApi().faucet(address, parseUnits(FAUCET_GRANT.bdx, BDX_DECIMALS).toString());
   const grants: FaucetResult['grants'] = [{ ticker: 'BDX', amount: FAUCET_GRANT.bdx, txHash: bdxTx.txHash }];
   if (tokenId) {
     await runtime.advanceBlocks?.(3);
