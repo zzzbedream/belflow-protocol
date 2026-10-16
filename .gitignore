@@ -24,3 +24,6 @@ apps/web/src/generated/
 playwright-report/
 test-results/
 packages/beldex-sdk/test/testnet/findings.json
+
+# Cached test results for pnpm report:qa
+.qa-results/

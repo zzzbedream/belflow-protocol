@@ -16,7 +16,8 @@
     "db:generate": "node scripts/prisma-schema.mjs generate",
     "db:postgres-schema": "node scripts/prisma-schema.mjs write",
     "test:audit": "vitest run --config vitest.audit.config.ts",
-    "testnet:deploy": "tsx scripts/testnet-deploy-and-seed.ts"
+    "testnet:deploy": "tsx scripts/testnet-deploy-and-seed.ts",
+    "report:qa": "tsx scripts/generate-qa-report.ts"
   },
   "prisma": {
     "schema": "../../prisma/schema.prisma"

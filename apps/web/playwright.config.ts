@@ -13,7 +13,8 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: 0,
-  reporter: [['list']],
+  // JSON is cached for `pnpm report:qa`.
+  reporter: [['list'], ['json', { outputFile: '../../.qa-results/playwright.json' }]],
   use: {
     baseURL: `http://localhost:${PORT}`,
     trace: 'retain-on-failure',

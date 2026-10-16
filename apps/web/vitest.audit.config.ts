@@ -10,6 +10,9 @@ export default defineConfig({
     },
   },
   test: {
+    // Cached for `pnpm report:qa` (docs/QA_AND_SECURITY_AUDIT_REPORT.md).
+    reporters: ['default', 'json'],
+    outputFile: { json: path.resolve(import.meta.dirname, '../../.qa-results/vitest-audit-web.json') },
     environment: 'node',
     include: ['test/audit/**/*.test.ts'],
     globalSetup: ['test/global-setup.ts'],
