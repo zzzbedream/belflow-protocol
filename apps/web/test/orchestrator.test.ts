@@ -4,7 +4,7 @@ import path from 'node:path';
 import { DaemonRpc, JsonRpcClient, WalletRpc } from '@belflow/sdk';
 import { describe, expect, it } from 'vitest';
 import { createBeldexEmulator } from '../scripts/testnet/emulator';
-import { EXPLORER_TX_URL, runOrchestrator, type OrchestratorDeps } from '../scripts/testnet/orchestrator';
+import { checkBelflowDecoder, EXPLORER_TX_URL, runOrchestrator, type OrchestratorDeps } from '../scripts/testnet/orchestrator';
 
 async function setup(options: { fundAtomic?: bigint; daemonAssetTags?: boolean; checkTxKeyIgnoresAssets?: boolean } = {}) {
   const emulator = createBeldexEmulator({
@@ -28,6 +28,13 @@ async function setup(options: { fundAtomic?: bigint; daemonAssetTags?: boolean; 
   return { emulator, deps, lines };
 }
 
+describe('checkBelflowDecoder', () => {
+  it('reports no-daemon and no-zarcanum-outputs without throwing', () => {
+    expect(checkBelflowDecoder(undefined, 'a'.repeat(64), [], 'b'.repeat(64))).toEqual({ status: 'no-daemon' });
+    expect(checkBelflowDecoder({ as_json: '{"vout":[{"amount":0,"target":{"key":"aa"}}]}' }, 'a'.repeat(64), [], 'b'.repeat(64))).toEqual({ status: 'no-zarcanum-outputs' });
+  });
+});
+
 describe('testnet orchestrator (against the wallet-rpc/daemon emulator)', () => {
   it('runs every step, records explorer links and rejects the live asset-confusion attempt', async () => {
     const { deps, lines } = await setup();
@@ -40,6 +47,8 @@ describe('testnet orchestrator (against the wallet-rpc/daemon emulator)', () => 
     expect(state.forensic?.checkTxKey.map((c) => c.receivedAtomic)).toEqual(['1000000', '2000000', '3000000']);
     expect(state.forensic?.extractorRecognizedAssetTags).toBe(false);
     expect(state.forensic?.zarcanumIgnoredByCheckTxKey).toBe(false);
+    // The emulator's decoded txs carry no tx_out_zarcanum outputs; the real run fills this in.
+    expect(state.forensic?.belflowDecoder).toEqual({ status: 'no-zarcanum-outputs' });
     expect(state.aud04).toMatchObject({ rejected: true, checkTxKeyReceivedAtomic: '100000000', diagnosis: 'ASSET_MISMATCH_DETECTED' });
     expect(state.aud04?.failures).toContain('ASSET_MISMATCH');
     expect(state.x402).toMatchObject({ status: 200, settledFromMempool: true });

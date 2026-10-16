@@ -139,6 +139,13 @@ export interface VerificationSources {
   inspectTx?(txHash: string): Promise<TxInspection | null>;
   /** Layer B3: verifies a payer signature over the canonical declaration. */
   verifySignature?(message: string, address: string, signature: string): Promise<boolean>;
+  /**
+   * Layer A for Confidential Assets: decodes tx_out_zarcanum outputs with the
+   * tx_key (amount and asset, commitment-checked). Needed because
+   * check_tx_key on feature-confidential-asset does not count those outputs.
+   * Null when the transaction has no such outputs.
+   */
+  zarcanumTxKey?(txHash: string, txKey: string, address: string): Promise<Array<{ assetId: string; amountAtomic: bigint }> | null>;
 }
 
 export interface VerifyPaymentOptions {
@@ -211,12 +218,26 @@ export async function verifyPayment(
   // Layer A: amount and recipient.
   const rawCheck = await sources.checkTxKey(claim.txHash, claim.txKey, claim.recipientAddress);
   const check = rawCheck.assetId === undefined ? rawCheck : { ...rawCheck, assetId: normalizeAssetId(rawCheck.assetId) };
-  if (check.receivedAtomic === 0n) failures.push('NO_OUTPUT_FOR_RECIPIENT');
-  else if (options.amountMatch === 'exact' && check.receivedAtomic !== claim.amountAtomic) failures.push('AMOUNT_MISMATCH');
-  else if (options.amountMatch === 'at-least' && check.receivedAtomic < claim.amountAtomic) failures.push('AMOUNT_INSUFFICIENT');
+
+  // Layer A for Confidential Assets: the tx_key decodes amount and asset of
+  // tx_out_zarcanum outputs, which check_tx_key does not count.
+  const zarcanum = sources.zarcanumTxKey
+    ? await attempt('zarcanum tx_key decode', notes, () => sources.zarcanumTxKey!(claim.txHash, claim.txKey, claim.recipientAddress))
+    : null;
+  let receivedAtomic = check.receivedAtomic;
+  if (zarcanum && zarcanum.length > 0) {
+    const matching = zarcanum.filter((output) => normalizeAssetId(output.assetId) === claim.assetId);
+    receivedAtomic = matching.reduce((sum, output) => sum + output.amountAtomic, 0n);
+    if (matching.length === zarcanum.length) level = 'CRYPTOGRAPHIC_FULL';
+    else failures.push('ASSET_MISMATCH');
+  }
+
+  if (receivedAtomic === 0n) failures.push('NO_OUTPUT_FOR_RECIPIENT');
+  else if (options.amountMatch === 'exact' && receivedAtomic !== claim.amountAtomic) failures.push('AMOUNT_MISMATCH');
+  else if (options.amountMatch === 'at-least' && receivedAtomic < claim.amountAtomic) failures.push('AMOUNT_INSUFFICIENT');
 
   if (check.assetId !== undefined) {
-    if (check.assetId === claim.assetId) level = 'CRYPTOGRAPHIC_FULL';
+    if (check.assetId === claim.assetId) level = strongest(level, 'CRYPTOGRAPHIC_FULL');
     else failures.push('ASSET_MISMATCH');
   }
 
@@ -265,7 +286,7 @@ export async function verifyPayment(
   const uniqueFailures = [...new Set(failures)];
   return {
     isValid: uniqueFailures.length === 0,
-    receivedAtomic: check.receivedAtomic,
+    receivedAtomic,
     inPool: check.inPool,
     isFlash,
     confirmations: check.confirmations,

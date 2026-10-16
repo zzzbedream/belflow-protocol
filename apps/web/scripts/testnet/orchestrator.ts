@@ -5,22 +5,7 @@
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import {
-  BDX_DECIMALS,
-  FundsLockedError,
-  NATIVE_TOKEN_ID,
-  PROTO_TESTNET_FORK_HEIGHT,
-  WalletRpcProvider,
-  belflowErrorCode,
-  formatUnits,
-  inspectionFromDecodedTx,
-  parseUnits,
-  toBigIntAmount,
-  verifyPayment,
-  waitForUnlockedFunds,
-  type DaemonRpc,
-  type WalletRpc,
-} from '@belflow/sdk';
+import { BDX_DECIMALS, FundsLockedError, NATIVE_TOKEN_ID, PROTO_TESTNET_FORK_HEIGHT, WalletRpcProvider, belflowErrorCode, formatUnits, inspectionFromDecodedTx, parseUnits, toBigIntAmount, verifyPayment, waitForUnlockedFunds, type DaemonRpc, type WalletRpc, decodeZarcanumWithTxKey, parseZarcanumOutputs } from '@belflow/sdk';
 import { createAssetDescriptorWriter } from '@belflow/sdk/node';
 import { InMemoryNonceStore, createAgentFetch, providerPayer, withX402 } from '@belflow/x402';
 
@@ -72,6 +57,8 @@ export interface DeploymentState {
     extractorRecognizedAssetTags: boolean;
     /** Every token output came back as received 0: check_tx_key does not count tx_out_zarcanum outputs. */
     zarcanumIgnoredByCheckTxKey: boolean;
+    /** BelFlow's own tx_key decode of the zarcanum outputs, compared with what was actually sent. */
+    belflowDecoder: BelflowDecoderCheck;
     sampleFile: string;
   };
   aud04?: {
@@ -100,6 +87,33 @@ export function diagnoseAud04(isValid: boolean, failures: string[], checkTxKeyRe
   if (checkTxKeyReceived === 0n) return 'ZARCANUM_ZERO_RECEIVED_IN_CHECK_TX_KEY';
   if (failures.includes('ASSET_MISMATCH')) return 'ASSET_MISMATCH_DETECTED';
   return 'REJECTED_OTHER';
+}
+
+export interface BelflowDecoderCheck {
+  status: 'matched' | 'mismatch' | 'no-zarcanum-outputs' | 'no-daemon' | 'error';
+  detail?: string;
+}
+
+/** Runs BelFlow's zarcanum decoder on the real tx and checks every recipient got the sent amount in the sent asset. */
+export function checkBelflowDecoder(
+  decodedTx: Record<string, unknown> | undefined,
+  txKey: string,
+  expected: Array<{ address: string; amountAtomic: bigint }>,
+  assetId: string,
+): BelflowDecoderCheck {
+  if (!decodedTx) return { status: 'no-daemon' };
+  const outputs = parseZarcanumOutputs(decodedTx);
+  if (outputs.length === 0) return { status: 'no-zarcanum-outputs' };
+  try {
+    for (const { address, amountAtomic } of expected) {
+      const found = decodeZarcanumWithTxKey({ outputs, txKey, address });
+      const ok = found.length === 1 && found[0]?.assetId === assetId.toLowerCase() && found[0]?.amountAtomic === amountAtomic;
+      if (!ok) return { status: 'mismatch', detail: `${address.slice(0, 12)}…: ${JSON.stringify(found, (_k, v: unknown) => (typeof v === 'bigint' ? v.toString() : v))}` };
+    }
+    return { status: 'matched' };
+  } catch (error) {
+    return { status: 'error', detail: (error as Error).message };
+  }
 }
 
 export type OrchestratorResult = { exitCode: 0 | 2 | 3; message: string; state: DeploymentState };
@@ -258,11 +272,18 @@ async function forensic(deps: OrchestratorDeps, state: DeploymentState, provider
   );
   const recognized = decoded ? inspectionFromDecodedTx(decoded).assetIds !== null : false;
   const zarcanumIgnored = checks.every((check) => check.expectedAtomic !== '0' && check.receivedAtomic === '0');
+  const belflowDecoder = checkBelflowDecoder(
+    decoded as unknown as Record<string, unknown> | undefined,
+    tokenKey,
+    recipients.map((address, i) => ({ address, amountAtomic: amounts[i] as bigint })),
+    busd.assetId,
+  );
+  deps.log(`BelFlow zarcanum decoder vs. sent amounts: ${belflowDecoder.status}${belflowDecoder.detail ? ` (${belflowDecoder.detail})` : ''}.`);
   deps.log(`Forensic dump written. Asset tags recognized by the extractor: ${recognized ? 'yes (DAEMON_EXTRACTED possible)' : 'no'}.`);
   if (zarcanumIgnored) deps.log('check_tx_key returned 0 for every Confidential Asset output (tx_out_zarcanum not counted). Recorded; continuing.');
   return saveState(deps, {
     ...state,
-    forensic: { splitTxHashes: split.tx_hash_list, flashTxHash: flash.txHash, checkTxKey: checks, extractorRecognizedAssetTags: recognized, zarcanumIgnoredByCheckTxKey: zarcanumIgnored, sampleFile: path.basename(sampleFile) },
+    forensic: { splitTxHashes: split.tx_hash_list, flashTxHash: flash.txHash, checkTxKey: checks, extractorRecognizedAssetTags: recognized, zarcanumIgnoredByCheckTxKey: zarcanumIgnored, belflowDecoder, sampleFile: path.basename(sampleFile) },
     links: { ...state.links, transfer_split: link(tokenTx), flash_payment: link(flash.txHash) },
   });
 }

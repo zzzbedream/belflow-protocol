@@ -77,7 +77,7 @@ describe('QA report', () => {
           updatedAt: '2026-10-16T09:00:00.000Z',
           preflight: { height: 4_290_000, nettype: 'testnet' },
           assets: { busd: { ticker: 'bUSD', assetId: 'b'.repeat(64), deployTxHash: hash } },
-          forensic: { splitTxHashes: [hash], flashTxHash: hash, extractorRecognizedAssetTags: false, zarcanumIgnoredByCheckTxKey: true },
+          forensic: { splitTxHashes: [hash], flashTxHash: hash, extractorRecognizedAssetTags: false, zarcanumIgnoredByCheckTxKey: true, belflowDecoder: { status: 'matched' } },
           aud04: { txHash: hash, claimedAsset: 'b'.repeat(64), paidAsset: 'c'.repeat(64), rejected: false, failures: [], level: null, checkTxKeyReceivedAtomic: '0', diagnosis: 'ACCEPTED' },
           links: { deploy_busd: `https://testnet.beldex.dev/tx/${hash}` },
         },
@@ -89,5 +89,6 @@ describe('QA report', () => {
     expect(report).not.toContain('**Pending.**');
     expect(report).toContain('| check_tx_key on Confidential Asset outputs | returned 0: `tx_out_zarcanum` outputs not counted |');
     expect(report).toContain('| AUD-04 diagnosis | `ACCEPTED` (check_tx_key received 0) |');
+    expect(report).toContain('| BelFlow tx_key decoder (zarcanum) | **matched every sent amount and asset** | – |');
   });
 });

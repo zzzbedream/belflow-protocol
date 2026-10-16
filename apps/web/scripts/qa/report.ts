@@ -31,7 +31,13 @@ export interface TestnetEvidence {
   preflight?: { height: number; nettype: string };
   presplit?: { txHashes: string[]; outputs: number };
   assets?: Record<string, { ticker?: string; assetId?: string; deployTxHash?: string } | undefined>;
-  forensic?: { splitTxHashes: string[]; flashTxHash: string; extractorRecognizedAssetTags: boolean; zarcanumIgnoredByCheckTxKey?: boolean };
+  forensic?: {
+    splitTxHashes: string[];
+    flashTxHash: string;
+    extractorRecognizedAssetTags: boolean;
+    zarcanumIgnoredByCheckTxKey?: boolean;
+    belflowDecoder?: { status: string; detail?: string };
+  };
   aud04?: {
     txHash: string;
     claimedAsset: string;
@@ -214,6 +220,11 @@ function renderTestnet(evidence: TestnetEvidence | null): string[] {
       rows.push(
         `| check_tx_key on Confidential Asset outputs | ${evidence.forensic.zarcanumIgnoredByCheckTxKey ? 'returned 0: `tx_out_zarcanum` outputs not counted' : 'returned the token amounts (no asset id)'} | – |`,
       );
+    }
+    if (evidence.forensic.belflowDecoder) {
+      const { status, detail } = evidence.forensic.belflowDecoder;
+      const text = status === 'matched' ? '**matched every sent amount and asset**' : status === 'mismatch' || status === 'error' ? `**${status}**: ${cell(detail ?? '')}` : status;
+      rows.push(`| BelFlow tx_key decoder (zarcanum) | ${text} | – |`);
     }
   }
   if (evidence.aud04) {

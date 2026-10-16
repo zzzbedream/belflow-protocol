@@ -12,6 +12,7 @@ import {
   ValidationError,
 } from '../errors';
 import type { DaemonRpc } from '../rpc/daemon';
+import { createZarcanumTxKeySource } from '../zarcanum/decode';
 import { toBigIntAmount } from '../rpc/json';
 import type { TransferDestination, WalletRpc } from '../rpc/wallet';
 import type {
@@ -269,6 +270,8 @@ export class WalletRpcProvider implements IBeldexProvider {
           }));
       },
       ...(this.inspect ? { inspectTx: this.inspect } : {}),
+      // Token payments: decode tx_out_zarcanum outputs with the tx_key (needs the raw tx from a daemon).
+      ...(this.daemon ? { zarcanumTxKey: createZarcanumTxKeySource(this.daemon) } : {}),
       verifySignature: async (message, address, signature) => (await this.wallet.verify(message, address, signature)).good,
     };
   }
