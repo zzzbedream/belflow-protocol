@@ -9,6 +9,9 @@
 //   Simplification: funds sent to a subaddress are not spendable by the parent
 //   account here (a real wallet would include them in the account balance).
 // - get_transactions exposes per-output asset tags only when `daemonAssetTags` is on.
+// - `checkTxKeyIgnoresAssets` mirrors wallet2::check_tx_key_helper on
+//   feature-confidential-asset (bc66339): it only scans txout_to_key outputs,
+//   so Confidential Asset outputs (tx_out_zarcanum) count as 0.
 
 import { readFile } from 'node:fs/promises';
 import { FundsLockedError, InsufficientFundsError, MockChain, parseJsonSafe, stringifyJsonSafe } from '@belflow/sdk';
@@ -19,6 +22,8 @@ export interface EmulatorOptions {
   fundAtomic?: bigint;
   /** Expose per-output asset tags in decoded transactions (format of real Proto txs is still unknown). */
   daemonAssetTags?: boolean;
+  /** check_tx_key reports 0 for Confidential Asset outputs (outcome B, as the branch source suggests). */
+  checkTxKeyIgnoresAssets?: boolean;
 }
 
 type Params = Record<string, unknown>;
@@ -121,7 +126,9 @@ export function createBeldexEmulator(options: EmulatorOptions = {}) {
     get_owned_assets: () => ({ assets: chain.listAssets().map((a) => ({ asset_id: a.assetId, full_name: a.name, ticker: a.ticker, decimal_point: a.decimals })) }),
     check_tx_key: (p) => {
       const check = run(() => chain.checkTxKey(String(p.txid), String(p.tx_key), String(p.address)));
-      return { received: check.receivedAtomic, in_pool: check.inPool, confirmations: check.confirmations };
+      const isAssetOutput = check.assetId !== undefined && check.assetId !== 'BDX';
+      const received = options.checkTxKeyIgnoresAssets && isAssetOutput ? 0n : check.receivedAtomic;
+      return { received, in_pool: check.inPool, confirmations: check.confirmations };
     },
     get_transfer_by_txid: (p) => {
       const view = chain.getTransaction(String(p.txid));

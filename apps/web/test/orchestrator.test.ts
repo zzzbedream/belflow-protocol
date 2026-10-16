@@ -6,8 +6,12 @@ import { describe, expect, it } from 'vitest';
 import { createBeldexEmulator } from '../scripts/testnet/emulator';
 import { EXPLORER_TX_URL, runOrchestrator, type OrchestratorDeps } from '../scripts/testnet/orchestrator';
 
-async function setup(options: { fundAtomic?: bigint; daemonAssetTags?: boolean } = {}) {
-  const emulator = createBeldexEmulator({ fundAtomic: options.fundAtomic ?? 100_000_000_000n, daemonAssetTags: options.daemonAssetTags ?? false });
+async function setup(options: { fundAtomic?: bigint; daemonAssetTags?: boolean; checkTxKeyIgnoresAssets?: boolean } = {}) {
+  const emulator = createBeldexEmulator({
+    fundAtomic: options.fundAtomic ?? 100_000_000_000n,
+    daemonAssetTags: options.daemonAssetTags ?? false,
+    checkTxKeyIgnoresAssets: options.checkTxKeyIgnoresAssets ?? false,
+  });
   const lines: string[] = [];
   const deps: OrchestratorDeps = {
     wallet: new WalletRpc(new JsonRpcClient({ url: 'http://emu/wallet', fetch: emulator.walletFetch })),
@@ -35,7 +39,8 @@ describe('testnet orchestrator (against the wallet-rpc/daemon emulator)', () => 
     expect(Object.keys(state.assets).sort()).toEqual(['bAUDIT', 'bUSD']);
     expect(state.forensic?.checkTxKey.map((c) => c.receivedAtomic)).toEqual(['1000000', '2000000', '3000000']);
     expect(state.forensic?.extractorRecognizedAssetTags).toBe(false);
-    expect(state.aud04).toMatchObject({ rejected: true });
+    expect(state.forensic?.zarcanumIgnoredByCheckTxKey).toBe(false);
+    expect(state.aud04).toMatchObject({ rejected: true, checkTxKeyReceivedAtomic: '100000000', diagnosis: 'ASSET_MISMATCH_DETECTED' });
     expect(state.aud04?.failures).toContain('ASSET_MISMATCH');
     expect(state.x402).toMatchObject({ status: 200, settledFromMempool: true });
     for (const key of ['deploy_bUSD', 'deploy_bAUDIT', 'transfer_split', 'flash_payment', 'aud04_attack', 'x402_flash']) {
@@ -44,6 +49,18 @@ describe('testnet orchestrator (against the wallet-rpc/daemon emulator)', () => 
     const sample = JSON.parse(await readFile(path.join(deps.artifactsDir, 'proto-tx-structure.json'), 'utf8')) as { daemon_get_transactions: { as_json: string } };
     expect(sample.daemon_get_transactions.as_json).toContain('vout');
     expect(lines.join('\n')).toMatch(/AUD-04 live: .* rejected/);
+  });
+
+  it('records outcome B without aborting when check_tx_key ignores Confidential Asset outputs', async () => {
+    const { deps, lines } = await setup({ checkTxKeyIgnoresAssets: true });
+    const result = await runOrchestrator(deps);
+    expect(result.exitCode).toBe(0);
+    const { state } = result;
+    expect(state.forensic?.checkTxKey.map((c) => c.receivedAtomic)).toEqual(['0', '0', '0']);
+    expect(state.forensic?.zarcanumIgnoredByCheckTxKey).toBe(true);
+    expect(state.aud04).toMatchObject({ rejected: true, checkTxKeyReceivedAtomic: '0', diagnosis: 'ZARCANUM_ZERO_RECEIVED_IN_CHECK_TX_KEY' });
+    expect(state.x402).toMatchObject({ status: 200 });
+    expect(lines.join('\n')).toMatch(/check_tx_key returned 0 for every Confidential Asset output/);
   });
 
   it('is idempotent: a rerun sends nothing new', async () => {

@@ -70,11 +70,36 @@ export interface DeploymentState {
     flashTxHash: string;
     checkTxKey: Array<{ address: string; expectedAtomic: string; receivedAtomic: string; inPool: boolean }>;
     extractorRecognizedAssetTags: boolean;
+    /** Every token output came back as received 0: check_tx_key does not count tx_out_zarcanum outputs. */
+    zarcanumIgnoredByCheckTxKey: boolean;
     sampleFile: string;
   };
-  aud04?: { txHash: string; claimedAsset: string; paidAsset: string; rejected: boolean; failures: string[]; level: string | null };
+  aud04?: {
+    txHash: string;
+    claimedAsset: string;
+    paidAsset: string;
+    rejected: boolean;
+    failures: string[];
+    level: string | null;
+    /** What check_tx_key alone reported for the attack output. */
+    checkTxKeyReceivedAtomic: string;
+    diagnosis: Aud04Diagnosis;
+  };
   x402?: { txHash: string; status: number; settledFromMempool: boolean | null; assetVerificationLevel: string | null };
   links: Record<string, string>;
+}
+
+/**
+ * Why the live AUD-04 ended as it did. A check_tx_key that reports 0 is the
+ * more fundamental cause, so it wins over a wallet-side ASSET_MISMATCH.
+ */
+export type Aud04Diagnosis = 'ACCEPTED' | 'ZARCANUM_ZERO_RECEIVED_IN_CHECK_TX_KEY' | 'ASSET_MISMATCH_DETECTED' | 'REJECTED_OTHER';
+
+export function diagnoseAud04(isValid: boolean, failures: string[], checkTxKeyReceived: bigint): Aud04Diagnosis {
+  if (isValid) return 'ACCEPTED';
+  if (checkTxKeyReceived === 0n) return 'ZARCANUM_ZERO_RECEIVED_IN_CHECK_TX_KEY';
+  if (failures.includes('ASSET_MISMATCH')) return 'ASSET_MISMATCH_DETECTED';
+  return 'REJECTED_OTHER';
 }
 
 export type OrchestratorResult = { exitCode: 0 | 2 | 3; message: string; state: DeploymentState };
@@ -232,10 +257,12 @@ async function forensic(deps: OrchestratorDeps, state: DeploymentState, provider
     'utf8',
   );
   const recognized = decoded ? inspectionFromDecodedTx(decoded).assetIds !== null : false;
+  const zarcanumIgnored = checks.every((check) => check.expectedAtomic !== '0' && check.receivedAtomic === '0');
   deps.log(`Forensic dump written. Asset tags recognized by the extractor: ${recognized ? 'yes (DAEMON_EXTRACTED possible)' : 'no'}.`);
+  if (zarcanumIgnored) deps.log('check_tx_key returned 0 for every Confidential Asset output (tx_out_zarcanum not counted). Recorded; continuing.');
   return saveState(deps, {
     ...state,
-    forensic: { splitTxHashes: split.tx_hash_list, flashTxHash: flash.txHash, checkTxKey: checks, extractorRecognizedAssetTags: recognized, sampleFile: path.basename(sampleFile) },
+    forensic: { splitTxHashes: split.tx_hash_list, flashTxHash: flash.txHash, checkTxKey: checks, extractorRecognizedAssetTags: recognized, zarcanumIgnoredByCheckTxKey: zarcanumIgnored, sampleFile: path.basename(sampleFile) },
     links: { ...state.links, transfer_split: link(tokenTx), flash_payment: link(flash.txHash) },
   });
 }
@@ -256,10 +283,22 @@ async function aud04(deps: OrchestratorDeps, state: DeploymentState, provider: W
     provider.verificationSources(),
     { amountMatch: 'exact' },
   );
-  deps.log(`AUD-04 live: 100 bAUDIT presented as 100 bUSD → ${result.isValid ? 'ACCEPTED (finding!)' : `rejected (${result.failures.join(', ')})`}.`);
+  const plainCheck = await deps.wallet.checkTxKey(attack.txHash, attack.txKey, victim);
+  const checkTxKeyReceived = toBigIntAmount(plainCheck.received);
+  const diagnosis = diagnoseAud04(result.isValid, result.failures, checkTxKeyReceived);
+  deps.log(`AUD-04 live: 100 bAUDIT presented as 100 bUSD → ${result.isValid ? 'ACCEPTED (finding!)' : `rejected (${result.failures.join(', ')})`}; check_tx_key received ${checkTxKeyReceived}; diagnosis ${diagnosis}.`);
   return saveState(deps, {
     ...state,
-    aud04: { txHash: attack.txHash, claimedAsset: busd.assetId, paidAsset: baudit.assetId, rejected: !result.isValid, failures: result.failures, level: result.assetVerificationLevel },
+    aud04: {
+      txHash: attack.txHash,
+      claimedAsset: busd.assetId,
+      paidAsset: baudit.assetId,
+      rejected: !result.isValid,
+      failures: result.failures,
+      level: result.assetVerificationLevel,
+      checkTxKeyReceivedAtomic: checkTxKeyReceived.toString(),
+      diagnosis,
+    },
     links: { ...state.links, aud04_attack: link(attack.txHash) },
   });
 }

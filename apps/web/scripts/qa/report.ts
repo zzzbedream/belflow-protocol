@@ -31,8 +31,17 @@ export interface TestnetEvidence {
   preflight?: { height: number; nettype: string };
   presplit?: { txHashes: string[]; outputs: number };
   assets?: Record<string, { ticker?: string; assetId?: string; deployTxHash?: string } | undefined>;
-  forensic?: { splitTxHashes: string[]; flashTxHash: string; extractorRecognizedAssetTags: boolean };
-  aud04?: { txHash: string; claimedAsset: string; paidAsset: string; rejected: boolean; failures: string[]; level: string | null };
+  forensic?: { splitTxHashes: string[]; flashTxHash: string; extractorRecognizedAssetTags: boolean; zarcanumIgnoredByCheckTxKey?: boolean };
+  aud04?: {
+    txHash: string;
+    claimedAsset: string;
+    paidAsset: string;
+    rejected: boolean;
+    failures: string[];
+    level: string | null;
+    checkTxKeyReceivedAtomic?: string;
+    diagnosis?: string;
+  };
   x402?: { txHash: string; status: number; settledFromMempool: boolean | null; assetVerificationLevel: string | null };
   links?: Record<string, string>;
 }
@@ -201,10 +210,16 @@ function renderTestnet(evidence: TestnetEvidence | null): string[] {
     rows.push(`| Multi-output transfer_split | ${evidence.forensic.splitTxHashes.length} tx | ${txLink(links, evidence.forensic.splitTxHashes[0])} |`);
     rows.push(`| Flash payment | sent | ${txLink(links, evidence.forensic.flashTxHash)} |`);
     rows.push(`| Asset-tag extractor | ${evidence.forensic.extractorRecognizedAssetTags ? 'recognized tags (DAEMON_EXTRACTED reachable)' : 'did not recognize tags (DAEMON_EXTRACTED not reached)'} | – |`);
+    if (evidence.forensic.zarcanumIgnoredByCheckTxKey !== undefined) {
+      rows.push(
+        `| check_tx_key on Confidential Asset outputs | ${evidence.forensic.zarcanumIgnoredByCheckTxKey ? 'returned 0: `tx_out_zarcanum` outputs not counted' : 'returned the token amounts (no asset id)'} | – |`,
+      );
+    }
   }
   if (evidence.aud04) {
     const a = evidence.aud04;
     rows.push(`| Live AUD-04 (paid ${a.paidAsset.slice(0, 8)}…, claimed ${a.claimedAsset.slice(0, 8)}…) | ${a.rejected ? `rejected: ${a.failures.join(', ')}` : '**ACCEPTED: BelFlow did not catch the wrong asset. Investigate before citing this run.**'} | ${txLink(links, a.txHash)} |`);
+    if (a.diagnosis) rows.push(`| AUD-04 diagnosis | \`${a.diagnosis}\` (check_tx_key received ${a.checkTxKeyReceivedAtomic ?? '?'}) | – |`);
   }
   if (evidence.x402) {
     const x = evidence.x402;
@@ -217,8 +232,9 @@ const LIMITS = [
   '## Scope and limits',
   '',
   '- The unit, audit and E2E suites run against the deterministic mock devnet and wallet-rpc/daemon emulators, not against Beldex nodes.',
-  '- Wallet-rpc `check_tx_key` returns no asset id. Token proofs are therefore `ISSUER_SIGNED_DECLARATION` unless the node attributes the output (`CRYPTOGRAPHIC_FULL`) or the daemon asset-tag extractor recognizes the tag (`DAEMON_EXTRACTED`). The extractor is calibrated only after a real testnet run.',
-  '- AUD-02 shows that an application which trusts `check_tx_key` alone would accept a payment in the wrong asset. That is an application-level verification gap, which BelFlow closes. It is not a confirmed protocol vulnerability, and it is not reported as one until the live AUD-04 run confirms the node behaviour.',
+  '- Wallet-rpc `check_tx_key` returns no asset id. Reading `feature-confidential-asset` at commit `bc66339`, its helper (`wallet2::check_tx_key_helper`) only scans `txout_to_key` outputs, so Confidential Asset outputs (`tx_out_zarcanum`) are likely reported as 0. This is a source reading; the testnet run records the real behaviour.',
+  '- Token proofs are therefore `ISSUER_SIGNED_DECLARATION` unless the receiving wallet attributes the output (`CRYPTOGRAPHIC_FULL`) or the daemon asset-tag extractor recognizes the tag (`DAEMON_EXTRACTED`). The extractor is calibrated only after a real testnet run.',
+  '- AUD-02 models a verifier that receives an amount without an asset id and shows BelFlow rejects the wrong asset. If the branch reports 0 for asset outputs, the gap upstream is broader: `tx_key` proofs for Confidential Assets cannot be checked with `check_tx_key` at all. Neither case is a protocol vulnerability.',
   '- Testnet activity claims are limited to what the public explorer shows: no user transactions observed since block 4,242,200 at the time of writing.',
 ];
 
