@@ -3,6 +3,7 @@
 import { verifyPackageIntegrity, type AuditProofPackage } from '@belflow/sdk';
 import { FlaskConical, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { useState } from 'react';
+import { XRayScanner } from '@/components/kinetic/XRayScanner';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Textarea } from '@/components/ui/Field';
@@ -12,6 +13,8 @@ interface InspectResult {
   integrity: boolean;
   chain: { isValid: boolean; failures: string[]; assetVerificationLevel: string | null } | null;
   error: string | null;
+  /** Ticker the inspected JSON claims, for the collision view. */
+  claimedTicker: string;
 }
 
 interface TamperSimulatorProps {
@@ -52,15 +55,16 @@ export function TamperSimulator({ proofId, pkg, txKey, passcode }: TamperSimulat
             ...(passcode ? { passcode } : {}),
           })
         : null;
-      setResult({ integrity, chain, error: null });
+      setResult({ integrity, chain, error: null, claimedTicker: candidate.tokenTicker });
     } catch (cause) {
-      setResult({ integrity: false, chain: null, error: errorMessage(cause) });
+      setResult({ integrity: false, chain: null, error: errorMessage(cause), claimedTicker: '?' });
     } finally {
       setIsBusy(false);
     }
   };
 
   const rejected = result && (!result.integrity || (result.chain && !result.chain.isValid));
+  const isAssetClash = Boolean(result?.chain?.failures.includes('ASSET_MISMATCH'));
 
   return (
     <details className="no-print rounded-[8px] border border-rule bg-paper-2 px-3 py-2 text-xs text-ink-2" data-testid="tamper-simulator">
@@ -77,6 +81,7 @@ export function TamperSimulator({ proofId, pkg, txKey, passcode }: TamperSimulat
             {isBusy ? 'Checking…' : 'Verify this JSON'}
           </Button>
         </div>
+        {isAssetClash && result && <XRayScanner txHash={pkg.txHash} state="mismatch" claimed={result.claimedTicker} paid={pkg.tokenTicker} />}
         {result && (
           <div className={rejected ? 'rounded-[8px] bg-danger-soft p-3' : 'rounded-[8px] bg-verified-soft p-3'} data-testid="inspect-result">
             <p className="flex items-center gap-2 font-semibold text-ink">

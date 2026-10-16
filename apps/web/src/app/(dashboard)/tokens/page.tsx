@@ -2,6 +2,7 @@
 
 import { Sparkles } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
+import { RingMixer } from '@/components/kinetic/RingMixer';
 import { PageHeader } from '@/components/shell/PageHeader';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -49,13 +50,10 @@ export default function TokensPage() {
 
   return (
     <>
-      <PageHeader
-        index="02"
-        title="Token Studio"
-        lede="Deploy Confidential Assets on the Proto hard fork. Sender, receiver and amount stay hidden by default; the treasury wallet signs the deploy."
-      />
+      <PageHeader index="02" title="Token Studio" lede="Confidential Assets on Proto (HF 22) · deploy_new_asset" />
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
         <Panel kicker="deploy_new_asset" title="Mint a Privacy Token" tone="raised">
+          <RingMixer labels={[form.ticker]} phase={isBusy ? 'broadcasting' : minted ? 'confirmed' : 'preview'} className="mb-4" />
           <div className="mb-4 flex flex-wrap gap-2">
             {PRESETS.map((preset) => (
               <button
@@ -99,7 +97,7 @@ export default function TokensPage() {
 
         <Panel kicker="Registry" title={`Privacy Tokens on ${network}`}>
           {privacyTokens.length === 0 ? (
-            <p className="text-sm text-ink-3">No Privacy Tokens yet. Deploy bUSD to unlock confidential payroll in stable value.</p>
+            <p className="text-sm text-ink-3">No Privacy Tokens yet.</p>
           ) : (
             <ul className="divide-y divide-rule" data-testid="token-registry">
               {privacyTokens.map((token) => (

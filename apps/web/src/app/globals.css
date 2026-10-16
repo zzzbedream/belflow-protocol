@@ -209,3 +209,16 @@ body::before {
     color: black;
   }
 }
+
+/* Kinetic surfaces: faint ledger grid behind the anime.js visualizations. */
+.kinetic-grid {
+  background-image:
+    linear-gradient(oklch(100% 0 0 / 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, oklch(100% 0 0 / 0.06) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.kinetic-svg-origin {
+  transform-box: fill-box;
+  transform-origin: center;
+}

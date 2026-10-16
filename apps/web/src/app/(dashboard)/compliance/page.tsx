@@ -4,6 +4,7 @@ import type { AuditProofPackage } from '@belflow/sdk';
 import { FileCheck2, KeyRound } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { AuditProofCard, type IssuedProof } from '@/components/compliance/AuditProofCard';
+import { XRayScanner, type ScanState } from '@/components/kinetic/XRayScanner';
 import { PageHeader } from '@/components/shell/PageHeader';
 import { Amount } from '@/components/ui/Amount';
 import { Button } from '@/components/ui/Button';
@@ -66,6 +67,7 @@ export default function CompliancePage() {
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [proof, setProof] = useState<IssuedProof | null>(null);
+  const [claimedTicker, setClaimedTicker] = useState<string | null>(null);
 
   useEffect(() => {
     loadReceipts().then(
@@ -75,6 +77,8 @@ export default function CompliancePage() {
   }, [network, tick]);
 
   const current = receipts?.find((receipt) => receipt.id === selected) ?? null;
+  const isMismatch = Boolean(error && /did not pay asset|ASSET_MISMATCH/i.test(error));
+  const scan: ScanState = isBusy ? 'scanning' : proof ? 'revealed' : isMismatch ? 'mismatch' : error ? 'rejected' : 'sealed';
 
   const handleGenerate = async () => {
     if (!current) return;
@@ -84,6 +88,7 @@ export default function CompliancePage() {
     try {
       // Attack demo: claim another asset for the same tx (BDX, or a token if the payment was BDX).
       const decoy = isAttack ? (current.tokenId === 'BDX' ? tokens.find((t) => !t.isNativeBdx)?.tokenId : 'BDX') : undefined;
+      setClaimedTicker(decoy ? (tokens.find((t) => t.tokenId === decoy)?.ticker ?? decoy.slice(0, 8)) : null);
       setProof(await issueProof(current, passcode, decoy));
     } catch (cause) {
       setError(errorMessage(cause));
@@ -94,16 +99,12 @@ export default function CompliancePage() {
 
   return (
     <>
-      <PageHeader
-        index="05"
-        title="Selective compliance"
-        lede="Prove one payment to an accountant or tax authority with its tx secret key. check_tx_key confirms the amount reached that address; nothing else in the treasury is revealed."
-      />
+      <PageHeader index="05" title="Selective compliance" lede="One tx_key opens one output · nothing else is revealed" />
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
         <Panel kicker="Encrypted vault" title="Payments with tx keys">
           {vaultError && <Notice tone="error">{vaultError}</Notice>}
           {receipts && receipts.length === 0 && (
-            <p className="text-sm text-ink-3">No receipts in this browser for {network}. Run a payroll first; its tx keys are stored here, encrypted.</p>
+            <p className="text-sm text-ink-3">No receipts for {network} in this browser. Run a payroll first.</p>
           )}
           <ul className="space-y-2" data-testid="receipt-list">
             {receipts?.map((receipt) => {
@@ -115,6 +116,7 @@ export default function CompliancePage() {
                     onClick={() => {
                       setSelected(receipt.id);
                       setProof(null);
+                      setError(null);
                     }}
                     aria-pressed={isSelected}
                     className={cn(
@@ -142,6 +144,13 @@ export default function CompliancePage() {
               </p>
             ) : (
               <div className="space-y-4">
+                <XRayScanner
+                  txHash={current.txHash}
+                  state={scan}
+                  disclosed={`${current.amount} ${current.tokenTicker}`}
+                  {...(claimedTicker ? { claimed: claimedTicker } : {})}
+                  paid={current.tokenTicker}
+                />
                 <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
                   <dt className="text-ink-3">To</dt>
                   <dd className="truncate">{current.recipientBns ?? current.recipientAddress}</dd>
@@ -153,10 +162,10 @@ export default function CompliancePage() {
                 <label className="flex cursor-pointer items-start gap-2 rounded-[8px] border border-danger/30 bg-danger-soft/60 px-3 py-2 text-xs text-ink-2">
                   <input type="checkbox" className="mt-0.5 accent-[var(--danger)]" checked={isAttack} onChange={(e) => setIsAttack(e.target.checked)} data-testid="attack-claim-asset" />
                   <span>
-                    <span className="font-medium text-danger">Attack: claim a different asset.</span> Tries to certify this payment as another token. Dual verification must refuse with ASSET_MISMATCH.
+                    <span className="font-medium text-danger">Attack: claim a different asset.</span> Expect ASSET_MISMATCH.
                   </span>
                 </label>
-                <Field label="Auditor passcode (optional)" htmlFor="passcode" hint="Adds a second factor to the link. Stored as a scrypt hash.">
+                <Field label="Auditor passcode (optional)" htmlFor="passcode" hint="Second factor · scrypt-hashed">
                   <Input id="passcode" type="password" minLength={8} value={passcode} onChange={(e) => setPasscode(e.target.value)} autoComplete="new-password" />
                 </Field>
                 <Button size="lg" variant="vault" className="w-full" onClick={handleGenerate} disabled={isBusy || (passcode.length > 0 && passcode.length < 8)} data-testid="generate-proof">

@@ -6,6 +6,7 @@ import { useParams } from 'next/navigation';
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { downloadJson } from '@/components/compliance/AuditProofCard';
 import { TamperSimulator } from '@/components/compliance/TamperSimulator';
+import { XRayScanner, type ScanState } from '@/components/kinetic/XRayScanner';
 import { Amount } from '@/components/ui/Amount';
 import { Badge, statusTone } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -118,6 +119,15 @@ export default function AuditorPortal() {
   };
 
   const pkg = proof?.package;
+  const scan: ScanState = isChecking
+    ? 'scanning'
+    : !verification
+      ? 'sealed'
+      : verification.isValid
+        ? 'revealed'
+        : verification.failures.includes('ASSET_MISMATCH')
+          ? 'mismatch'
+          : 'rejected';
 
   return (
     <main className="relative z-10 mx-auto max-w-3xl px-4 py-10">
@@ -172,7 +182,7 @@ export default function AuditorPortal() {
           </div>
 
           <div className="space-y-5 px-6 py-5">
-            {isChecking && <p className="text-sm text-ink-3">Running check_tx_key against the Beldex node…</p>}
+            <XRayScanner txHash={pkg.txHash} state={scan} disclosed={`${verification?.receivedAmount ?? pkg.disclosedAmount} ${pkg.tokenTicker}`} paid={pkg.tokenTicker} />
             {verification && (
               <div className={verification.isValid ? 'rounded-[10px] bg-verified-soft p-4' : 'rounded-[10px] bg-danger-soft p-4'}>
                 <p className="flex items-center gap-2 font-semibold">
@@ -183,7 +193,7 @@ export default function AuditorPortal() {
                 </p>
                 <p className="mt-1 text-sm text-ink-2">
                   {verification.isValid
-                    ? `${verification.receivedAmount} ${pkg.tokenTicker} reached this address in this transaction (${verification.confirmations} confirmations). No other output, balance or transaction of the payer was disclosed.`
+                    ? `${verification.receivedAmount} ${pkg.tokenTicker} · ${verification.confirmations} confirmations · nothing else disclosed`
                     : verification.failures.join(', ')}
                 </p>
                 {verification.assetVerificationLevel && (

@@ -2,6 +2,7 @@
 
 import { Bot, CircleAlert, Play, ShieldCheck, Terminal, Zap } from 'lucide-react';
 import { useState } from 'react';
+import { LaserCircuit, type CircuitOutcome } from '@/components/kinetic/LaserCircuit';
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/components/ui/cn';
 import { Field, Input } from '@/components/ui/Field';
@@ -77,6 +78,7 @@ export function AgentPaymentPlayground({ price, onRun }: { price?: { amount: str
   const [rawStatus, setRawStatus] = useState<{ status: number; headers: Array<[string, string]> } | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [runKey, setRunKey] = useState(0);
 
   const probe = async () => {
     setError(null);
@@ -100,11 +102,17 @@ export function AgentPaymentPlayground({ price, onRun }: { price?: { amount: str
       setError(errorMessage(cause));
     } finally {
       setIsBusy(false);
+      setRunKey((key) => key + 1);
     }
   };
 
   const start = run?.trace[0]?.at ?? 0;
   const lastResponse = run?.responses.at(-1);
+  const isMismatch = (lastResponse as { error?: string } | null)?.error === 'asset_mismatch';
+  const lastStatus = Number(run?.trace.filter((event) => event.type === 'response').at(-1)?.detail.status ?? 0);
+  const outcome: CircuitOutcome = isBusy ? 'running' : !run && !error ? 'idle' : run && lastStatus === 200 && !isMismatch ? 'ok' : 'blocked';
+  const steps = { challenge: Boolean(run?.trace.some((e) => e.type === 'challenge')), paid: Boolean(run?.trace.some((e) => e.type === 'paid')) };
+  const blockReason = isMismatch ? 'asset_mismatch' : (run?.trace.find((e) => e.type === 'error')?.detail.message as string | undefined) ?? (lastStatus ? `HTTP ${lastStatus}` : undefined);
 
   return (
     <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
@@ -131,11 +139,15 @@ export function AgentPaymentPlayground({ price, onRun }: { price?: { amount: str
             <Input id="calls" type="number" min={1} max={5} value={calls} onChange={(e) => setCalls(Math.min(5, Math.max(1, Number(e.target.value) || 1)))} />
           </Field>
         </div>
-        <p className="text-xs text-ink-3">The agent refuses to pay above its cap, beyond its budget or to a payee not on its BNS allowlist (oracle-provider.bdx).</p>
+        <p className="flex flex-wrap gap-1.5 text-[0.65rem]" aria-label="Spend policy">
+          {['cap per call', 'budget', 'allowlist: oracle-provider.bdx'].map((rule) => (
+            <span key={rule} className="figures rounded-full border border-rule px-2 py-0.5 text-ink-2">{rule}</span>
+          ))}
+        </p>
         <label className="flex cursor-pointer items-start gap-2 rounded-[8px] border border-danger/30 bg-danger-soft/60 px-3 py-2 text-xs text-ink-2">
           <input type="checkbox" className="mt-0.5 accent-[var(--danger)]" checked={isAttack} onChange={(e) => setIsAttack(e.target.checked)} data-testid="attack-wrong-asset" />
           <span>
-            <span className="font-medium text-danger">Attack: pay with the wrong asset.</span> The agent pays the same number of BDX instead of bUSD. The server must answer <code className="figures">asset_mismatch</code>.
+            <span className="font-medium text-danger">Attack: pay with the wrong asset.</span> BDX instead of bUSD → expect <code className="figures">asset_mismatch</code>.
           </span>
         </label>
         <div className="flex flex-wrap gap-2">
@@ -161,29 +173,32 @@ export function AgentPaymentPlayground({ price, onRun }: { price?: { amount: str
         {error && <Notice tone="error">{error}</Notice>}
       </div>
 
-      <div className="min-w-0 rounded-[12px] border border-ink bg-ink p-4 text-paper shadow-[var(--shadow)]" data-testid="agent-trace">
-        <p className="figures flex items-center justify-between text-[0.66rem] uppercase tracking-[0.18em] text-paper/50">
-          <span>agent trace</span>
-          {run && <span>spent {run.spent} {run.tokenTicker}</span>}
-        </p>
-        {!run && <p className="mt-6 text-sm text-paper/50">Run the agent to watch the 402 → pay → 200 handshake.</p>}
-        {run && (
-          <ol className="mt-3 divide-y divide-paper/10">
-            {run.trace.map((event, index) => (
-              <TraceLine key={`${event.at}-${index}`} event={event} start={start} />
-            ))}
-          </ol>
-        )}
-        {(lastResponse as { error?: string } | null)?.error === 'asset_mismatch' && (
-          <p className="mt-4 rounded-[8px] border border-danger/60 bg-danger/20 px-3 py-2 text-sm font-medium text-paper" data-testid="asset-mismatch-alert">
-            Rejected: asset_mismatch. The tx paid BDX where bUSD was quoted; dual verification refused to unlock the resource.
+      <div className="min-w-0 space-y-4">
+        <LaserCircuit outcome={outcome} steps={steps} runKey={runKey} {...(blockReason ? { blockReason } : {})} />
+        <div className="min-w-0 rounded-[12px] border border-ink bg-ink p-4 text-paper shadow-[var(--shadow)]" data-testid="agent-trace">
+          <p className="figures flex items-center justify-between text-[0.66rem] uppercase tracking-[0.18em] text-paper/50">
+            <span>agent trace</span>
+            {run && <span>spent {run.spent} {run.tokenTicker}</span>}
           </p>
-        )}
-        {lastResponse != null && (
-          <pre className="figures mt-4 max-h-64 overflow-auto rounded-[8px] bg-paper/5 p-3 text-[0.68rem] leading-relaxed text-paper/80">
-            {JSON.stringify(lastResponse, null, 2)}
-          </pre>
-        )}
+          {!run && <p className="figures mt-6 text-xs text-paper/50">402 → pay → 200</p>}
+          {run && (
+            <ol className="mt-3 divide-y divide-paper/10">
+              {run.trace.map((event, index) => (
+                <TraceLine key={`${event.at}-${index}`} event={event} start={start} />
+              ))}
+            </ol>
+          )}
+          {(lastResponse as { error?: string } | null)?.error === 'asset_mismatch' && (
+            <p className="mt-4 rounded-[8px] border border-danger/60 bg-danger/20 px-3 py-2 text-sm font-medium text-paper" data-testid="asset-mismatch-alert">
+              Rejected: asset_mismatch. The tx paid BDX where bUSD was quoted; dual verification refused to unlock the resource.
+            </p>
+          )}
+          {lastResponse != null && (
+            <pre className="figures mt-4 max-h-64 overflow-auto rounded-[8px] bg-paper/5 p-3 text-[0.68rem] leading-relaxed text-paper/80">
+              {JSON.stringify(lastResponse, null, 2)}
+            </pre>
+          )}
+        </div>
       </div>
     </div>
   );

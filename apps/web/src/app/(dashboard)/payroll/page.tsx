@@ -3,6 +3,7 @@
 import { planBatches, type BatchPaymentRecipient } from '@belflow/sdk';
 import { RotateCcw, Send } from 'lucide-react';
 import { useState } from 'react';
+import { RingMixer, type MixerPhase } from '@/components/kinetic/RingMixer';
 import { BatchCsvUploader } from '@/components/payroll/BatchCsvUploader';
 import { BatchPlan } from '@/components/payroll/BatchPlan';
 import { JobStatus } from '@/components/payroll/JobStatus';
@@ -104,14 +105,17 @@ export default function PayrollPage() {
   };
 
   const canResume = run && ['WAITING_UTXO_UNLOCK', 'FAILED'].includes(run.job.status);
+  const phase: MixerPhase = isBusy
+    ? 'broadcasting'
+    : run?.job.status === 'WAITING_UTXO_UNLOCK'
+      ? 'locked'
+      : run && ['CONFIRMED', 'SUBMITTED'].includes(run.job.status)
+        ? 'confirmed'
+        : 'preview';
 
   return (
     <>
-      <PageHeader
-        index="03"
-        title="Confidential payroll"
-        lede="One multi-output RingCT transaction per 15 employees. Each gets a unique stealth address and a Pedersen-committed amount; the tx keys stay in your browser vault for later receipts."
-      />
+      <PageHeader index="03" title="Confidential payroll" lede="15 stealth outputs per tx · ring size 10 · tx keys stay in this browser" />
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
         <div className="space-y-6">
           <Panel kicker="Step 1" title="Load the payroll">
@@ -141,10 +145,11 @@ export default function PayrollPage() {
           <Panel kicker="Step 3" title="Batch plan" tone="raised">
             {chunks.length === 0 ? (
               <p className="text-sm text-ink-3">
-                {draft.rows.length === 0 ? 'Load a CSV to see the transactions BelFlow will build.' : 'Waiting for every recipient and token to resolve.'}
+                {draft.rows.length === 0 ? 'Load a CSV.' : 'Resolving recipients…'}
               </p>
             ) : (
               <>
+                <RingMixer labels={draft.rows.map((row) => row.recipientInput)} phase={phase} className="mb-5" />
                 <BatchPlan chunks={chunks} tokens={tokens} useFlash={useFlash} onToggleFlash={setUseFlash} />
                 <Button size="lg" className="mt-5 w-full" onClick={execute} disabled={isBusy || !isReady} data-testid="run-payroll">
                   <Send className="size-4" aria-hidden />

@@ -2,6 +2,7 @@
 
 import { Droplets } from 'lucide-react';
 import { useEffect, useState, type FormEvent } from 'react';
+import { VaultDispenser, type DispenserState } from '@/components/kinetic/VaultDispenser';
 import { PageHeader } from '@/components/shell/PageHeader';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -55,33 +56,23 @@ export default function FaucetPage() {
     }
   };
 
+  const dispenser: DispenserState = isBusy ? 'dispensing' : result ? 'sent' : error && /faucet claim/i.test(error) ? 'cooldown' : 'idle';
+
   return (
     <>
-      <PageHeader
-        index="07"
-        title="Evaluator faucet"
-        lede="A fixed test package for grant reviewers: Privacy Tokens to try payroll and invoices, plus BDX for Flash fees. One claim per address and per connection every 24 hours."
-      />
+      <PageHeader index="07" title="Evaluator faucet" lede={`One claim per address and connection every ${config?.windowHours ?? 24} h`} />
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         <Panel kicker={network === 'mock-devnet' ? 'Mock devnet' : 'Testnet · Proto'} title="Request test funds" tone="raised">
           {config && !config.enabled && (
             <Notice tone="info" className="mb-4">
-              The testnet faucet is disabled on this deployment. Switch to Mock devnet, or enable BELFLOW_FAUCET_ENABLED with a funded faucet account.
+              Testnet faucet disabled here. Use Mock devnet, or set BELFLOW_FAUCET_ENABLED with a funded account.
             </Notice>
           )}
           <form onSubmit={handleSubmit} className="space-y-4" data-testid="faucet-form">
             <Field label="Recipient" htmlFor="recipient" hint="A Beldex address or a .bdx name, e.g. juan.bdx">
               <Input id="recipient" value={recipient} onChange={(e) => setRecipient(e.target.value)} required maxLength={120} autoComplete="off" />
             </Field>
-            <ul className="flex flex-wrap gap-2">
-              {config?.grants.map((grant) => (
-                <li key={grant.ticker}>
-                  <Badge tone="vault">
-                    {grant.amount} {grant.ticker}
-                  </Badge>
-                </li>
-              ))}
-            </ul>
+            <VaultDispenser state={dispenser} grants={config?.grants ?? []} windowHours={config?.windowHours ?? 24} />
             <Button type="submit" variant="vault" size="lg" className="w-full" disabled={isBusy || config?.enabled === false} data-testid="claim-faucet">
               <Droplets className="size-4" aria-hidden />
               {isBusy ? 'Sending…' : 'Claim test package'}
@@ -92,7 +83,7 @@ export default function FaucetPage() {
 
         <Panel kicker="Receipt" title="What was sent">
           {!result ? (
-            <p className="text-sm text-ink-3">Claims show their transactions here. Amounts are fixed by the server.</p>
+            <p className="text-sm text-ink-3">No claim yet.</p>
           ) : (
             <div className="space-y-3" data-testid="faucet-result">
               <Badge tone={result.status === 'SENT' ? 'verified' : 'flash'}>{result.status}</Badge>

@@ -31,7 +31,7 @@ export function BatchPlan({ chunks, tokens, useFlash, onToggleFlash }: BatchPlan
           <span className="flex items-center gap-1.5 text-sm font-medium text-ink">
             <Zap className={cn('size-4', useFlash ? 'text-flash' : 'text-ink-3')} aria-hidden /> Flash transactions
           </span>
-          <span className="block text-xs text-ink-3">Instant quorum lock (priority 5). The surcharge is burned.</span>
+          <span className="figures block text-[0.62rem] uppercase tracking-[0.12em] text-ink-3">priority 5 · surcharge burned</span>
         </span>
         <input type="checkbox" className="size-4 accent-[var(--vault)]" checked={useFlash} onChange={(e) => onToggleFlash(e.target.checked)} />
       </label>
@@ -68,9 +68,7 @@ export function BatchPlan({ chunks, tokens, useFlash, onToggleFlash }: BatchPlan
         <dt className="text-ink-3">Estimated burn</dt>
         <dd className={cn('figures text-right', useFlash ? 'text-flash' : 'text-ink-3')}>{formatUnits(fee.burnedAtomic, BDX_DECIMALS, 4)} BDX</dd>
       </dl>
-      <p className="text-[0.7rem] text-ink-3">
-        Up to {MAX_RECIPIENTS_PER_TX} recipients per transaction (16 outputs incl. change). Fees are estimates; the wallet reports the real fee.
-      </p>
+      <p className="figures text-[0.62rem] uppercase tracking-[0.12em] text-ink-3">≤ {MAX_RECIPIENTS_PER_TX} outputs + change per tx · fee estimated</p>
     </div>
   );
 }

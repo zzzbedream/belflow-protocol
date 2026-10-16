@@ -33,6 +33,8 @@ export default defineConfig({
       BELFLOW_PUBLIC_ORIGIN: `http://localhost:${PORT}`,
       BELDEX_WALLET_RPC_URL: '',
       SESSION_SECRET: 'e2e-secret-e2e-secret-e2e-secret-00000001',
+      // next dev compiles client chunks on demand; the default heap stalled them (pending main-app.js).
+      NODE_OPTIONS: '--max-old-space-size=4096',
     },
   },
 });

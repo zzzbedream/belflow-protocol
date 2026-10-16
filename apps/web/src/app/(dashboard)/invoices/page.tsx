@@ -51,7 +51,7 @@ export default function InvoicesPage() {
       <PageHeader
         index="04"
         title="B2B invoices"
-        lede="Payment links settle in one click with Flash transactions. The memo is encrypted in your browser; its key travels only in the link fragment, which never reaches the server."
+        lede="Flash checkout · memo encrypted in the browser · key only in the link fragment"
       />
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
         <Panel kicker="New invoice" title="Create a payment link" tone="raised">

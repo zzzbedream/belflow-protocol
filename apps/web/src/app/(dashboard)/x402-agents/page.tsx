@@ -33,7 +33,7 @@ export default function X402AgentsPage() {
       <PageHeader
         index="06"
         title="x402 agent rails"
-        lede="HTTP 402 Payment Required, settled privately on Beldex. Competitors watching the chain cannot see which API an agent bought, from whom, or for how much."
+        lede="HTTP 402 · Flash 0-conf · private settlement"
       />
       <div className="space-y-6">
         <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-[10px] border border-rule bg-rule sm:grid-cols-5" data-testid="x402-metrics">

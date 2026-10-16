@@ -1,16 +1,40 @@
 'use client';
 
+import { BDX_DECIMALS, formatUnits } from '@belflow/sdk';
 import { Radio } from 'lucide-react';
 import { CapabilityMatrix } from '@/components/dashboard/CapabilityMatrix';
-import { TelemetryCards } from '@/components/dashboard/TelemetryCards';
+import { FeeRace } from '@/components/kinetic/FeeRace';
+import { Reactor } from '@/components/kinetic/Reactor';
 import { PageHeader } from '@/components/shell/PageHeader';
 import { Amount } from '@/components/ui/Amount';
 import { HashChip } from '@/components/ui/HashChip';
 import { Notice } from '@/components/ui/Notice';
 import { Panel } from '@/components/ui/Panel';
 import { errorMessage } from '@/lib/api';
-import type { OverviewDto } from '@/lib/types';
+import { formatGrouped } from '@/lib/format';
+import type { ActivityKind, OverviewDto } from '@/lib/types';
 import { useApi } from '@/lib/useApi';
+
+const BURN_LABELS: Record<ActivityKind, string> = {
+  PAYROLL: 'Flash payroll',
+  TOKEN_DEPLOY: 'Token emission',
+  X402: 'x402 agents',
+  INVOICE: 'Invoices',
+  BNS: 'BNS',
+};
+
+function Telemetry({ overview }: { overview: OverviewDto }) {
+  const telemetry = overview.telemetry;
+  if (!telemetry) return <Notice tone="info">Telemetry is visible to the treasury operator only.</Notice>;
+  const bdx = (atomic: string) => formatUnits(BigInt(atomic), BDX_DECIMALS, 4);
+  const breakdown = (Object.keys(BURN_LABELS) as ActivityKind[]).map((kind) => ({ label: BURN_LABELS[kind], value: bdx(telemetry.burnedByKind[kind] ?? '0') }));
+  return (
+    <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+      <Reactor burnedBdx={formatGrouped(bdx(telemetry.burnedTotalAtomic))} txCount={telemetry.txCount} rails={overview.capabilityMatrix} breakdown={breakdown} />
+      <FeeRace telemetry={telemetry} tokens={overview.tokens} />
+    </div>
+  );
+}
 
 function ChainStatus({ overview }: { overview: OverviewDto }) {
   const height = overview.treasury?.height ?? overview.explorer?.height;
@@ -36,52 +60,36 @@ export default function TreasuryPage() {
 
   return (
     <>
-      <PageHeader
-        index="01"
-        title="Confidential treasury"
-        lede="Balances live in RingCT outputs, not on a public explorer. Everything below is visible only to this workspace."
-        aside={data && <ChainStatus overview={data} />}
-      />
+      <PageHeader index="01" title="Confidential treasury" aside={data && <ChainStatus overview={data} />} />
       {error && <Notice tone="error">{errorMessage(error)}</Notice>}
       {isLoading && !data && <p className="text-sm text-ink-3">Loading treasury…</p>}
       {data && (
         <div className="space-y-6">
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
+          <Telemetry overview={data} />
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)]">
             <Panel
-              kicker="Treasury wallet"
-              title={data.network === 'mock-devnet' ? 'tesoreria.bdx' : 'Wallet-RPC sidecar'}
+              kicker={data.network === 'mock-devnet' ? 'tesoreria.bdx' : 'Wallet-RPC sidecar'}
               tone="raised"
               action={data.treasury && <HashChip value={data.treasury.address} />}
             >
               {data.treasuryError && <Notice tone="warning">{data.treasuryError}</Notice>}
               {data.treasury && (
-                <ul className="divide-y divide-rule" data-testid="treasury-balances">
+                <ul className="flex flex-wrap gap-2" data-testid="treasury-balances">
                   {data.treasury.balances.map((balance) => (
-                    <li key={balance.tokenId} className="flex items-baseline justify-between gap-4 py-3">
-                      <div>
-                        <p className="font-medium text-ink">{balance.ticker}</p>
-                        <p className="text-xs text-ink-3">{balance.isNativeBdx ? 'Native coin' : balance.name}</p>
-                      </div>
-                      <Amount value={balance.amount} ticker={balance.ticker} className="text-xl" />
+                    <li key={balance.tokenId} className="flex items-baseline gap-2 rounded-full border border-rule bg-paper-2 px-3 py-1.5" title={balance.isNativeBdx ? 'Native coin' : balance.name}>
+                      <Amount value={balance.amount} ticker={balance.ticker} className="text-base" />
                     </li>
                   ))}
                 </ul>
               )}
             </Panel>
-            {data.telemetry ? (
-              <TelemetryCards overview={data} />
-            ) : (
-              <Notice tone="info">Telemetry is visible to the treasury operator only.</Notice>
-            )}
+            <Panel kicker="Which rail signs what">
+              <CapabilityMatrix rows={data.capabilityMatrix} />
+              {data.network === 'testnet' && !data.testnetConfigured && (
+                <Notice tone="info" className="mt-4">Explorer data only. Set BELDEX_WALLET_RPC_URL for payroll, tokens and tx-key receipts.</Notice>
+              )}
+            </Panel>
           </div>
-          <Panel kicker="Active capability matrix" title="Which rail signs what">
-            <CapabilityMatrix rows={data.capabilityMatrix} />
-            {data.network === 'testnet' && !data.testnetConfigured && (
-              <Notice tone="info" className="mt-4">
-                Public testnet data comes from the explorer. Configure BELDEX_WALLET_RPC_URL to enable the enterprise sidecar for payroll, Privacy Tokens and tx-key receipts.
-              </Notice>
-            )}
-          </Panel>
         </div>
       )}
     </>
