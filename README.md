@@ -36,7 +36,7 @@ docs/                    Architecture, testnet setup, upstream recommendations,
 
 ### Dual verification against asset confusion
 
-`check_tx_key` on the Proto branch returns an amount but no asset id. BelFlow adds a second layer and reports it:
+`check_tx_key` on the Proto branch returns an amount with no asset id. Per its source, it likely does not count Confidential Asset outputs (`tx_out_zarcanum`) at all; the testnet run records which. BelFlow adds a second layer and reports it:
 
 | `assetVerificationLevel` | Evidence |
 |---|---|

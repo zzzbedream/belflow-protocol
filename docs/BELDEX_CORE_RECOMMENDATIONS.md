@@ -7,22 +7,32 @@ Each item states what we observed, why it matters for applications, and a concre
 
 ---
 
-## 1. `check_tx_key` does not identify the asset (security)
+## 1. `check_tx_key` and Confidential Asset outputs
 
-### Finding
+### Finding (source reading at `feature-confidential-asset` commit `bc66339`)
 
-On the confidential-asset branch, `wallet::transfer_destination` carries an `asset_id`, so a single transaction can pay BDX or any Privacy Token. The proof RPCs were not extended to match:
+Confidential Assets are paid through a different output type, `tx_out_zarcanum`, which carries a `blinded_asset_id` (`src/cryptonote_basic/cryptonote_basic.h`). The proof RPC was not extended to match:
 
 ```
 CHECK_TX_KEY request:  txid, tx_key, address
 CHECK_TX_KEY response: received (uint64), in_pool, confirmations
 ```
 
-`received` is a bare amount. A verifier cannot tell whether `500000` means 0.0005 BDX or 0.50 bUSD.
+- The response has no asset field (`src/wallet/wallet_rpc_server_commands_defs.h`, `struct CHECK_TX_KEY`).
+- The handler, `wallet_rpc_server::invoke(CHECK_TX_KEY::request&&)`, calls `wallet2::check_tx_key_helper`.
+  - The helper only looks at `txout_to_key` outputs: other output types are skipped with `continue`.
+  - It checks each commitment against the native generator `rct::H`.
+- So a `tx_out_zarcanum` output paying the address is most likely not counted, and a token payment reports `received: 0`.
+- The wallet already decodes these outputs elsewhere (`decode_zarcanum_output` in `src/wallet/wallet2.cpp`).
 
-### Impact: asset confusion
+This is a reading of the source, not yet an observation: `pnpm testnet:deploy` records what the node actually returns (`forensic.checkTxKey`, `aud04.diagnosis`).
 
-Any flow that verifies payments with `check_tx_key` (merchant checkout, x402 pay-per-call, accounting receipts) can be fooled. The payer sends the claimed *number* in a cheaper asset, and verification passes. We reproduced this on our deterministic simulator. BelFlow now rejects the case, but only because it adds a second, non-native verification layer.
+### Why it matters for applications
+
+- Merchant checkout, x402 pay-per-call and accounting receipts verify a payment from `txid` + `tx_key` without holding the recipient's wallet.
+- For Confidential Assets that check is not available today. It either reports 0, if the reading above holds, or reports an amount without saying which asset it is.
+- In the second case, a verifier that trusts the bare amount could accept the claimed *number* paid in a different asset. Our simulator reproduces that case, and BelFlow rejects it.
+- Neither case is a consensus or cryptography flaw. It is a gap in the wallet RPC surface.
 
 ### Our workaround (what BelFlow ships today)
 
@@ -38,32 +48,29 @@ If any layer contradicts another, the payment is rejected. The weakest level is 
 
 We could not confirm whether `decode_as_json` exposes per-output asset tags. Between the Proto fork height (4,242,200) and the current tip, the public testnet explorer shows no non-coinbase transactions. No real token transfer exists yet to inspect, so our live suite (`pnpm test:testnet`, step 4) performs one and records the raw output.
 
-### Proposal: JSON-RPC patch
+### Proposal: wallet RPC change
 
-Extend `CHECK_TX_KEY` and `CHECK_TX_PROOF` responses (backward compatible: new fields only).
+1. In `wallet2::check_tx_key_helper`, also handle `tx_out_zarcanum` outputs: derive and decode them with the existing `decode_zarcanum_output`, and verify the amount against the asset's commitment.
+2. Return the asset with the amount. The code allows one confidential asset per transaction (`cryptonote_tx_utils.cpp`), so one field is enough (new field only, backward compatible):
 
 ```cpp
 // wallet_rpc_server_commands_defs.h
 struct CHECK_TX_KEY : RPC_COMMAND {
   struct response {
-    uint64_t received;          // unchanged: total, kept for old clients
+    uint64_t received;       // unchanged
     bool in_pool;
     uint64_t confirmations;
-    // NEW: per-asset breakdown of what `address` received in `txid`
-    struct asset_amount { std::string asset_id; uint64_t amount; };
-    std::vector<asset_amount> received_by_asset;  // "" = native BDX
+    std::string asset_id;    // NEW: "" for native BDX, hex asset id for a Confidential Asset
   };
 };
 ```
 
-In `wallet_rpc_server::on_check_tx_key`, the derivation loop already decodes each output's amount. It can attach the output's asset id, which the wallet already knows when it builds `asset_balances`, and accumulate per asset.
-
 Two optional additions:
 
-- `get_transactions` with `decode_as_json` should include `asset_id` (or the asset tag) per `vout` entry, so third-party daemons can attribute outputs without wallet keys.
+- `get_transactions` with `decode_as_json` could expose a per-`vout` asset tag where the design allows it, so third-party daemons can attribute outputs without wallet keys.
 - `get_transfer_by_txid` should always include `asset_id` on each entry. BelFlow already reads it when present.
 
-With this patch, any `check_tx_key` verification can reach `CRYPTOGRAPHIC_FULL` without wallet access. That is the cleanest path to "audit one payment, reveal nothing else" for tokens.
+With this change, any `check_tx_key` verification of a token payment can reach `CRYPTOGRAPHIC_FULL` without wallet access. That is the cleanest path to "audit one payment, reveal nothing else" for tokens.
 
 ---
 
