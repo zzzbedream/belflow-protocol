@@ -6,7 +6,7 @@ Companies, LATAM merchants and AI agents can settle payroll, invoices and API ca
 
 > Status: works end to end on a deterministic mock devnet. Validated read-only against **Beldex Testnet (Proto, HF 22)**. Ready for the `feature-confidential-asset` wallet-rpc sidecar. See [Testnet status](#testnet-status).
 
-| Grant category | What BelFlow ships |
+| Area | What BelFlow ships |
 |---|---|
 | Private payment solutions and infrastructure | Multi-output RingCT payroll, B2B invoices with Flash checkout, HTTP 402 rails |
 | Privacy tokens and token-based applications | Token Studio (`deploy_new_asset`), payroll and invoicing in bUSD/bCLP/bBRL |
@@ -19,7 +19,9 @@ apps/web                 Next.js 15 dashboard, auditor portal, checkout, API rou
 packages/beldex-sdk      @belflow/sdk: providers, RPC, BNS, dual verification, MockChain
 packages/x402-beldex     @belflow/x402: HTTP 402 middleware + budgeted agent client
 prisma/schema.prisma     Metadata-only schema (no keys, balances or payroll lists)
-docs/                    Architecture, testnet setup, upstream recommendations, demo
+prisma/postgres/         Generated Postgres schema + migrations (hosted deployments)
+docs/                    Architecture, testnet setup, upstream recommendations,
+                         QA report, Vercel deploy
 ```
 
 ### Modules
@@ -29,7 +31,8 @@ docs/                    Architecture, testnet setup, upstream recommendations, 
 3. **Confidential payroll.** CSV in, one transaction per 15 employees out. Idempotent jobs survive locked change (`WAITING_UTXO_UNLOCK`) and crashes without ever paying twice. Tx keys are captured into an encrypted browser vault.
 4. **B2B invoices.** Memos are encrypted in the browser (the key lives in the link fragment). Each invoice has its own subaddress, and Flash payments settle from the mempool.
 5. **Selective compliance.** Receipts are built from tx keys and verified live by the auditor (`/verify/[proofId]`). The portal shows a "verified in block #N" seal plus an **asset verification level**.
-6. **x402 agents.** `alpha-bot.bdx` pays an HTTP 402 challenge in bUSD with a Flash transaction and unlocks the response. Nonces and tx hashes are single use, and agents are spend-capped.
+6. **x402 agents.** `alpha-bot.bdx` pays an HTTP 402 challenge in bUSD with a Flash transaction and unlocks the response. Nonces and tx hashes are single use, and agents are spend-capped. An attack toggle pays with the wrong asset; the server must answer `asset_mismatch`.
+7. **Faucet.** A fixed grant of 2 BDX and 250 bUSD, with one claim per recipient and per IP every 24 h. IPs are stored only as HMACs. On testnet it is opt-in and uses a dedicated wallet account.
 
 ### Dual verification against asset confusion
 
@@ -54,19 +57,26 @@ pnpm db:push
 pnpm dev                                    # http://localhost:3000
 ```
 
-Walk the demo in [docs/DEMO.md](docs/DEMO.md): deploy bUSD, pay a CSV payroll, issue an audit proof, open it as the auditor, settle an invoice, and run the x402 agent.
+Then deploy bUSD in Token Studio, pay a CSV payroll, issue an audit proof, open it as the auditor, settle an invoice, and run the x402 agent.
 
 ## Checks
 
 ```bash
-pnpm test           # SDK 82 · x402 13 · web 35 unit/integration tests
-pnpm test:coverage  # SDK 97% · x402 99% · web 95% line coverage
+pnpm test           # SDK 82 · x402 13 · web 68 unit/integration tests
+pnpm test:audit     # adversarial suite AUD-01..AUD-05 (31 tests)
+pnpm test:coverage  # line coverage: SDK 88.9% · x402 99.4% · web 88.2%
 pnpm typecheck
 pnpm lint
 pnpm build
-pnpm e2e            # Playwright: the full mock-devnet journey
+pnpm e2e            # Playwright: mock-devnet journey + QA matrix (8 flows)
+pnpm report:qa      # writes docs/QA_AND_SECURITY_AUDIT_REPORT.md from cached results
 pnpm test:testnet   # live Beldex Testnet suite (BELDEX_TESTNET_E2E=1)
+pnpm testnet:deploy # deploy bUSD/bAUDIT, forensic capture, live AUD-04, x402 Flash (--emulate to dry-run)
 ```
+
+The latest results are in [docs/QA_AND_SECURITY_AUDIT_REPORT.md](docs/QA_AND_SECURITY_AUDIT_REPORT.md).
+
+**Public demo.** [docs/DEPLOY_VERCEL.md](docs/DEPLOY_VERCEL.md) deploys the mock devnet to Vercel + Postgres. The ledger is shared across serverless instances through an optimistic-concurrency snapshot, and the faucet lets evaluators fund any address.
 
 ## Testnet status
 
@@ -74,7 +84,7 @@ pnpm test:testnet   # live Beldex Testnet suite (BELDEX_TESTNET_E2E=1)
 |---|---|
 | Public testnet reachable, height past Proto fork (4,242,200), HF 22 | ✅ verified by `pnpm test:testnet` |
 | Tx inspection (flash flag, block height) via public explorer | ✅ verified |
-| Wallet-rpc sidecar flows (deploy, multi-output with `asset_id`, `check_tx_key`, BNS) | ⏳ suite ready, needs a funded `feature-confidential-asset` wallet-rpc ([setup](docs/testnet-setup.md)) |
+| Wallet-rpc sidecar flows (deploy, multi-output with `asset_id`, `check_tx_key`, BNS) | ⏳ `pnpm testnet:deploy` ready and verified against an emulator; needs a funded `feature-confidential-asset` wallet-rpc ([setup](docs/testnet-setup.md)) |
 | Browser extension login/checkout | ⏳ needs the Beldex Wallet extension on testnet |
 
 From the Proto fork to the current tip, the public testnet shows no token transactions. The live suite therefore creates its own, and records how asset tags appear in decoded transactions.

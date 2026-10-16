@@ -1,6 +1,6 @@
 # BelFlow Protocol architecture
 
-**Audience:** Beldex maintainers and grant reviewers who know CryptoNote/RingCT.
+**Audience:** Beldex maintainers and integrators who know CryptoNote/RingCT.
 
 ## 1. Why Beldex's UTXO model fits payroll and compliance
 

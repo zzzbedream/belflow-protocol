@@ -27,3 +27,10 @@ packages/beldex-sdk/test/testnet/findings.json
 
 # Cached test results for pnpm report:qa
 .qa-results/
+
+# Internal material: strategy, grant drafts, emails. Never published.
+.internal/
+docs/grant/
+docs/internal/
+*.internal.md
+.stitch/

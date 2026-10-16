@@ -1,6 +1,6 @@
 # Running BelFlow against Beldex Testnet (Proto)
 
-**Audience:** developers and grant reviewers who want the real-network path.
+**Audience:** developers who want the real-network path.
 
 The mock devnet needs nothing. The testnet path needs a `beldex-wallet-rpc` built from the branch with Confidential Assets, plus testnet BDX.
 
