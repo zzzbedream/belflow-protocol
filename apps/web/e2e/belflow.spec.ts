@@ -3,8 +3,18 @@ import { expect, test } from '@playwright/test';
 // One continuous grant-demo journey on the deterministic mock devnet.
 test.describe.configure({ mode: 'serial' });
 
-test('treasury shows the active capability matrix and telemetry', async ({ page }) => {
+test('landing shows the architecture and launches the app', async ({ page }) => {
   await page.goto('/');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Prove one token payment');
+  await expect(page.getByTestId('architecture-map')).toBeVisible();
+  await expect(page.getByTestId('proof-sequence')).toContainText('tx_out_zarcanum');
+  await page.getByTestId('launch-app').click();
+  await expect(page).toHaveURL(/\/treasury$/);
+  await expect(page.getByRole('heading', { name: 'Confidential treasury' })).toBeVisible();
+});
+
+test('treasury shows the active capability matrix and telemetry', async ({ page }) => {
+  await page.goto('/treasury');
   await expect(page.getByRole('heading', { name: 'Confidential treasury' })).toBeVisible();
   await expect(page.getByTestId('capability-matrix')).toContainText('Deterministic MockChain');
   await expect(page.getByTestId('burn-card')).toContainText('Total BDX burned');

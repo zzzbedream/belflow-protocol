@@ -12,7 +12,7 @@ export const dynamic = 'force-dynamic';
 
 export const metadata: Metadata = {
   title: { default: 'BelFlow Protocol', template: '%s · BelFlow' },
-  description: 'Confidential payroll, selective compliance receipts and x402 AI payment rails on Beldex.',
+  description: 'Non-custodial, open-source tooling for Beldex Privacy Tokens: SDK, tx_key payment proofs and x402 rails.',
   robots: { index: false, follow: false },
 };
 

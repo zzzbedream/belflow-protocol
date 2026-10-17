@@ -9,7 +9,7 @@ import { cn } from '@/components/ui/cn';
 import { useBeldexStore, type AppNetwork } from '@/store/useBeldexStore';
 
 const NAV = [
-  { href: '/', label: 'Treasury', icon: Landmark },
+  { href: '/treasury', label: 'Treasury', icon: Landmark },
   { href: '/tokens', label: 'Token Studio', icon: Coins },
   { href: '/payroll', label: 'Payroll', icon: Users },
   { href: '/invoices', label: 'Invoices', icon: FileText },
@@ -85,7 +85,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <nav aria-label="Main navigation" className="overflow-x-auto px-2 pb-3 lg:px-3">
           <ol className="flex gap-1 lg:flex-col">
             {NAV.map((item, index) => {
-              const isActive = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
+              const isActive = pathname.startsWith(item.href);
               const Icon = item.icon;
               return (
                 <li key={item.href}>
