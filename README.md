@@ -1,107 +1,103 @@
 # BelFlow Protocol
 
-**Confidential payroll, selective compliance receipts and x402 AI payment rails on Beldex.**
+**Non-custodial, open-source tooling for Beldex Privacy Tokens:** a TypeScript SDK, `tx_key` payment proofs that work for Confidential Assets, and HTTP 402 payment rails for AI agents.
 
-Companies, LATAM merchants and AI agents can settle payroll, invoices and API calls in Beldex Privacy Tokens without exposing their treasury or payee graph on a public explorer. Each payment can still be proved, one output at a time, to an accountant or tax authority.
+BelFlow holds no funds and runs no payment service. Each organization keeps its own wallet. BelFlow gives developers the layer between the browser wallet (`@bdxi/web3js`) and `beldex-wallet-rpc`: token deployment, multi-output batches, BNS names, and receipts an auditor can verify without seeing anything else.
 
-> Status: works end to end on a deterministic mock devnet. Validated read-only against **Beldex Testnet (Proto, HF 22)**. Ready for the `feature-confidential-asset` wallet-rpc sidecar. See [Testnet status](#testnet-status).
+- **Live demo (mock devnet, no wallet needed):** https://belflow-protocol.vercel.app
+- **QA and security report:** [docs/QA_AND_SECURITY_AUDIT_REPORT.md](docs/QA_AND_SECURITY_AUDIT_REPORT.md)
+- **Findings and proposals for Beldex core:** [docs/BELDEX_CORE_RECOMMENDATIONS.md](docs/BELDEX_CORE_RECOMMENDATIONS.md)
 
-| Area | What BelFlow ships |
+## Proving a token payment with a `tx_key`
+
+A payer shares one transaction's secret key, and an auditor checks that payment alone. For BDX, `check_tx_key` does this. For Confidential Assets on `feature-confidential-asset` (commit `bc66339`) it cannot yet:
+- tokens are paid as `tx_out_zarcanum` outputs;
+- `wallet2::check_tx_key_helper` only scans `txout_to_key` outputs.
+
+BelFlow fills the gap in its SDK:
+
+- **[`packages/beldex-sdk/src/zarcanum`](packages/beldex-sdk/src/zarcanum).** It decodes `tx_out_zarcanum` outputs from the `tx_key`. The payer's key gives the same derivation (8·r·A) that `decode_zarcanum_output` uses, so a verifier recovers the amount and the asset id, then checks them against the output's Pedersen commitment.
+- **The CryptoNote primitives are ported from Beldex's C++.** These are `ge_fromfe_frombytes_vartime`, `hash_to_ec`, key derivation, the `X` asset generator and `commitAsset`. They are tested against Monero's official `tests/crypto` vectors.
+- **`verifyPayment` uses this as its first layer.** A token payment is proven at `CRYPTOGRAPHIC_FULL` even when `check_tx_key` reports 0. The transaction must come from a trusted daemon, because consensus validates the asset proofs.
+- **The testnet run will be the end-to-end check** (`pnpm testnet:deploy`). It decodes a real `transfer_split` and compares the result with the amounts and asset actually sent (`forensic.belflowDecoder`).
+
+Every verification reports how strong its asset evidence is:
+
+| `assetVerificationLevel` | Evidence |
 |---|---|
-| Private payment solutions and infrastructure | Multi-output RingCT payroll, B2B invoices with Flash checkout, HTTP 402 rails |
-| Privacy tokens and token-based applications | Token Studio (`deploy_new_asset`), payroll and invoicing in bUSD/bCLP/bBRL |
-| Developer tools, SDKs and infrastructure | `@belflow/sdk`, `@belflow/x402`, a deterministic MockChain, a live testnet suite |
+| `CRYPTOGRAPHIC_FULL` | `tx_key` decode of the zarcanum output, or the receiving wallet's own view |
+| `DAEMON_EXTRACTED` | Every output in the decoded transaction carries an asset tag |
+| `ISSUER_SIGNED_DECLARATION` | The payer signed `belflow-proof-v1\|txHash\|assetId\|amountAtomic\|recipient` |
+
+Any contradiction between layers rejects the payment as `ASSET_MISMATCH`. The native fix we propose upstream (decode zarcanum outputs in `check_tx_key` and return `asset_id`) is in the recommendations document.
 
 ## What's inside
 
 ```
-apps/web                 Next.js 15 dashboard, auditor portal, checkout, API routes
-packages/beldex-sdk      @belflow/sdk: providers, RPC, BNS, dual verification, MockChain
-packages/x402-beldex     @belflow/x402: HTTP 402 middleware + budgeted agent client
-prisma/schema.prisma     Metadata-only schema (no keys, balances or payroll lists)
-prisma/postgres/         Generated Postgres schema + migrations (hosted deployments)
-docs/                    Architecture, testnet setup, upstream recommendations,
-                         QA report, Vercel deploy
+packages/beldex-sdk      @belflow/sdk: providers (extension, wallet-rpc, MockChain), RPC,
+                         BNS, batch planning, zarcanum tx_key decoder, verification
+packages/x402-beldex     @belflow/x402: HTTP 402 middleware + spend-capped agent client
+apps/web                 Next.js dashboard, auditor portal, checkout, faucet, API routes
+prisma/                  Metadata-only schema (no keys, balances or payroll lists)
+docs/                    Architecture, testnet setup, Vercel deploy, QA report, upstream notes
 ```
 
-### Modules
+The demo app shows the SDK end to end:
+- **Treasury.** Balances, BNS resolution, and which rail signs what.
+- **Token Studio.** Deploys Confidential Assets via `deploy_new_asset`.
+- **Batch payments.** 15 recipients per transaction, idempotent and reconciled after timeouts.
+- **Invoices.** Flash checkout.
+- **Auditor portal.** Verifies a `tx_key` receipt, and includes a tamper simulator.
+- **x402 agents.** Pay per call with Flash, with an attack toggle that must end in `asset_mismatch`.
+- **Faucet.** For evaluators.
 
-1. **Treasury and BNS.** Redacted-by-default balances. `.bdx` resolution (`bns_resolve` + `bns_decrypt_value`). A live capability matrix shows which rail signs what: browser extension, wallet-rpc sidecar or MockChain.
-2. **Token Studio.** Deploy Confidential Assets through a hardened `deploy_new_asset` descriptor writer.
-3. **Confidential payroll.** CSV in, one transaction per 15 employees out. Idempotent jobs survive locked change (`WAITING_UTXO_UNLOCK`) and crashes without ever paying twice. Tx keys are captured into an encrypted browser vault.
-4. **B2B invoices.** Memos are encrypted in the browser (the key lives in the link fragment). Each invoice has its own subaddress, and Flash payments settle from the mempool.
-5. **Selective compliance.** Receipts are built from tx keys and verified live by the auditor (`/verify/[proofId]`). The portal shows a "verified in block #N" seal plus an **asset verification level**.
-6. **x402 agents.** `alpha-bot.bdx` pays an HTTP 402 challenge in bUSD with a Flash transaction and unlocks the response. Nonces and tx hashes are single use, and agents are spend-capped. An attack toggle pays with the wrong asset; the server must answer `asset_mismatch`.
-7. **Faucet.** A fixed grant of 2 BDX and 250 bUSD, with one claim per recipient and per IP every 24 h. IPs are stored only as HMACs. On testnet it is opt-in and uses a dedicated wallet account.
-
-### Dual verification against asset confusion
-
-`check_tx_key` on the Proto branch returns an amount with no asset id. Per its source, it likely does not count Confidential Asset outputs (`tx_out_zarcanum`) at all; the testnet run records which. BelFlow adds a second layer and reports it:
-
-| `assetVerificationLevel` | Evidence |
-|---|---|
-| `CRYPTOGRAPHIC_FULL` | The receiving wallet or node attributes the output to the asset |
-| `DAEMON_EXTRACTED` | Every output in the decoded tx carries an asset tag |
-| `ISSUER_SIGNED_DECLARATION` | The payer signed `belflow-proof-v1\|txHash\|assetId\|amountAtomic\|recipient` |
-
-Any contradiction rejects the payment. The proposed native fix is in [docs/BELDEX_CORE_RECOMMENDATIONS.md](docs/BELDEX_CORE_RECOMMENDATIONS.md).
-
-## Quick start (mock devnet, no node needed)
+## Run it locally (mock devnet, no node needed)
 
 Requires Node ≥ 20.11 and pnpm 11.
 
 ```bash
 pnpm install
-cp apps/web/.env.example apps/web/.env      # then set SESSION_SECRET (32+ random chars)
+cp apps/web/.env.example apps/web/.env      # set SESSION_SECRET (32+ random chars)
 pnpm db:push
 pnpm dev                                    # http://localhost:3000
 ```
 
-Then deploy bUSD in Token Studio, pay a CSV payroll, issue an audit proof, open it as the auditor, settle an invoice, and run the x402 agent.
-
 ## Checks
 
 ```bash
-pnpm test           # SDK 82 · x402 13 · web 68 unit/integration tests
+pnpm test           # SDK 95 · x402 13 · web 70 unit/integration tests
 pnpm test:audit     # adversarial suite AUD-01..AUD-05 (31 tests)
-pnpm test:coverage  # line coverage: SDK 88.9% · x402 99.4% · web 88.2%
-pnpm typecheck
-pnpm lint
-pnpm build
-pnpm e2e            # Playwright: mock-devnet journey + QA matrix (8 flows)
+pnpm e2e            # Playwright on a production build of the mock devnet (9 flows)
+pnpm typecheck && pnpm lint && pnpm build
 pnpm report:qa      # writes docs/QA_AND_SECURITY_AUDIT_REPORT.md from cached results
-pnpm test:testnet   # live Beldex Testnet suite (BELDEX_TESTNET_E2E=1)
-pnpm testnet:deploy # deploy bUSD/bAUDIT, forensic capture, live AUD-04, x402 Flash (--emulate to dry-run)
+pnpm testnet:deploy # real testnet run: deploy, transfer_split, check_tx_key vs BelFlow decoder, x402 Flash
 ```
-
-The latest results are in [docs/QA_AND_SECURITY_AUDIT_REPORT.md](docs/QA_AND_SECURITY_AUDIT_REPORT.md).
-
-**Public demo.** [docs/DEPLOY_VERCEL.md](docs/DEPLOY_VERCEL.md) deploys the mock devnet to Vercel + Postgres. The ledger is shared across serverless instances through an optimistic-concurrency snapshot, and the faucet lets evaluators fund any address.
 
 ## Testnet status
 
 | Item | Status |
 |---|---|
-| Public testnet reachable, height past Proto fork (4,242,200), HF 22 | ✅ verified by `pnpm test:testnet` |
-| Tx inspection (flash flag, block height) via public explorer | ✅ verified |
-| Wallet-rpc sidecar flows (deploy, multi-output with `asset_id`, `check_tx_key`, BNS) | ⏳ `pnpm testnet:deploy` ready and verified against an emulator; needs a funded `feature-confidential-asset` wallet-rpc ([setup](docs/testnet-setup.md)) |
-| Browser extension login/checkout | ⏳ needs the Beldex Wallet extension on testnet |
+| Public testnet past the Proto fork (4,242,200), read-only checks via the explorer | ✅ |
+| `tx_out_zarcanum` decoder | ✅ Monero vectors and round-trip tests · ⏳ live comparison in `pnpm testnet:deploy` |
+| Wallet-rpc flows (deploy, multi-output, `check_tx_key`, x402 Flash) | ⏳ script ready and tested against an emulator; needs a funded `feature-confidential-asset` wallet-rpc ([setup](docs/testnet-setup.md)) |
+| Browser extension sign-in and checkout | ⏳ needs the Beldex Wallet extension on testnet |
 
-From the Proto fork to the current tip, the public testnet shows no token transactions. The live suite therefore creates its own, and records how asset tags appear in decoded transactions.
+At the time of writing, the public explorer shows no user transactions since the Proto fork. The testnet script creates its own and records the raw results in `docs/artifacts/`.
 
-## Stack and decisions
+## Stack
 
-- **Beldex.** `@bdxi/web3js@1.0.1` (the published name of `bdx-web3js`) for the browser wallet. `beldex-wallet-rpc` and `beldexd` JSON-RPC with HTTP Digest auth.
-- **Web.** Next.js 15 App Router, React 19, Tailwind v4, Zustand, SWR, zod.
-- **Data.** Prisma 6 with SQLite in dev and Postgres in production. The server stores metadata and client-encrypted blobs only.
+- **Beldex.** `@bdxi/web3js@1.0.1` for the browser wallet; `beldex-wallet-rpc` and `beldexd` JSON-RPC with HTTP Digest auth.
+- **Cryptography.** `@noble/curves` (ed25519) and `@noble/hashes` (keccak).
+- **Web.** Next.js 15, React 19, Tailwind v4, Prisma 6 (SQLite locally, Postgres on Vercel), anime.js.
 - **Security.**
   - Per-request CSP nonces.
-  - CSRF origin checks and wallet-signature login bound to the browser.
-  - Operator-only treasury routes on testnet.
-  - A read-only RPC proxy allowlist.
-  - Atomic nonce consumption and a shared settled-transaction claim.
+  - Origin checks.
+  - Browser-bound wallet sign-in.
+  - Single-use nonces and settled-transaction claims.
+  - Client-side encryption of `tx_key`s.
+  - Faucet IPs stored only as HMACs.
 
-Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for flows, the threat model and the path to the 2027 Beldex EVM sidechain.
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) has the flows and the threat model. [docs/DEPLOY_VERCEL.md](docs/DEPLOY_VERCEL.md) has the hosted demo setup.
 
 ## License
 

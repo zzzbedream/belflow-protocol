@@ -34,3 +34,6 @@ docs/grant/
 docs/internal/
 *.internal.md
 .stitch/
+
+# Vercel CLI link
+.vercel/

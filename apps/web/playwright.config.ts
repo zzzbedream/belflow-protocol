@@ -22,9 +22,11 @@ export default defineConfig({
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 1000 } } }],
   webServer: {
-    command: `node e2e/prepare.mjs && npx next dev -p ${PORT}`,
+    // A production build: no on-demand compilation (next dev ran out of memory
+    // compiling chunks mid-run) and the same CSP and runtime a deployment serves.
+    command: `node e2e/prepare.mjs && npx next build && npx next start -p ${PORT}`,
     url: `http://localhost:${PORT}/api/tokens`,
-    timeout: 180_000,
+    timeout: 420_000,
     reuseExistingServer: false,
     env: {
       DATABASE_URL: 'file:./e2e.db',
@@ -33,7 +35,6 @@ export default defineConfig({
       BELFLOW_PUBLIC_ORIGIN: `http://localhost:${PORT}`,
       BELDEX_WALLET_RPC_URL: '',
       SESSION_SECRET: 'e2e-secret-e2e-secret-e2e-secret-00000001',
-      // next dev compiles client chunks on demand; the default heap stalled them (pending main-app.js).
       NODE_OPTIONS: '--max-old-space-size=4096',
     },
   },

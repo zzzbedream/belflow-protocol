@@ -109,3 +109,14 @@ The first request creates the `MockChainSnapshot` row with the seeded demo ident
   - A corrupt row answers HTTP 500 (`MOCK_CHAIN_CORRUPT`).
 
   In either case, or whenever you want a clean demo, reset it. To reset the demo, delete the row (`DELETE FROM "MockChainSnapshot";`) or change `BELFLOW_MOCK_SEED`. Proofs and receipts issued before the reset will then fail verification, as they should.
+
+## Notes from the first deployment (Vercel CLI, October 2026)
+
+The public demo runs at https://belflow-protocol.vercel.app. Getting there with the CLI only took these details:
+
+- **Root directory and workspace files.** `rootDirectory = apps/web` with `sourceFilesOutsideRootDirectory = true` lets the build see `packages/*`. With the CLI: `vercel api /v9/projects/<name> -X PATCH` (set `MSYS_NO_PATHCONV=1` in Git Bash so the path is not rewritten).
+- **pnpm 11.** Set `ENABLE_EXPERIMENTAL_COREPACK=1`, so Vercel uses the `packageManager` version from `package.json`.
+- **Database.** Run `vercel integration add neon`. The Neon terms must first be accepted in a browser by the account owner. The integration injects `DATABASE_URL` and `DATABASE_URL_UNPOOLED`.
+- **Upload filter.** `.vercelignore` keeps `.internal/`, local `.env` files and SQLite databases off Vercel. The CLI does not rely on `.gitignore` for this.
+- **Migrations.** `migrate deploy` can time out acquiring Prisma's advisory lock on Neon (P1002). The build retries it up to three times; it is idempotent.
+- **Check a deployment end to end** with `BELFLOW_E2E_BASE_URL=<url> pnpm --filter @belflow/web e2e:live`. It writes to that demo's ledger, so the deploy and faucet tests only pass on a fresh database.

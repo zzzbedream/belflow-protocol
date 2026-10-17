@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "e2e": "playwright test",
+    "e2e:live": "playwright test --config playwright.live.config.ts",
     "db:push": "prisma db push",
     "db:generate": "node scripts/prisma-schema.mjs generate",
     "db:postgres-schema": "node scripts/prisma-schema.mjs write",

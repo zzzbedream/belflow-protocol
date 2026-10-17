@@ -84,6 +84,27 @@ function prisma(args) {
   execFileSync(process.execPath, [cli, ...args], { stdio: 'inherit', env });
 }
 
+const MIGRATE_ATTEMPTS = 3;
+const MIGRATE_RETRY_MS = 5_000;
+
+/**
+ * `migrate deploy` is idempotent, so a failed attempt is safe to repeat. On
+ * Neon it can time out acquiring Prisma's advisory lock (P1002) while a
+ * previous connection still holds it; a short wait usually clears it.
+ */
+function migrateWithRetry() {
+  for (let attempt = 1; attempt <= MIGRATE_ATTEMPTS; attempt += 1) {
+    try {
+      prisma(['migrate', 'deploy', '--schema', POSTGRES_SCHEMA]);
+      return;
+    } catch (error) {
+      if (attempt === MIGRATE_ATTEMPTS) throw error;
+      console.warn(`[prisma-schema] migrate deploy failed (attempt ${attempt}/${MIGRATE_ATTEMPTS}); retrying in ${MIGRATE_RETRY_MS / 1000}s.`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, MIGRATE_RETRY_MS);
+    }
+  }
+}
+
 function main(command) {
   if (command === 'write') return writePostgresSchema();
   if (command === 'check') {
@@ -105,7 +126,7 @@ function main(command) {
     if (provider === 'sqlite') return prisma(['generate', '--schema', SQLITE_SCHEMA]);
     writePostgresSchema();
     prisma(['generate', '--schema', POSTGRES_SCHEMA]);
-    if (shouldMigrate(process.env)) prisma(['migrate', 'deploy', '--schema', POSTGRES_SCHEMA]);
+    if (shouldMigrate(process.env)) migrateWithRetry();
     return;
   }
   throw new Error('Usage: prisma-schema.mjs <write|check|generate>');
