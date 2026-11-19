@@ -1,6 +1,6 @@
-// CryptoNote / RingCT primitives needed to read Beldex Confidential Asset
-// outputs (tx_out_zarcanum) from a transaction secret key. Ported from
-// Beldex-Coin/beldex@feature-confidential-asset (bc6633953127):
+// CryptoNote / RingCT primitives needed to read Beldex privacy token outputs
+// (tx_out_zyphora) from a transaction secret key. Ported from
+// Beldex-Coin/beldex@feature-privacy-token (4d89104, 2026-11-14):
 // src/crypto/crypto-ops.c, src/crypto/crypto.cpp, src/ringct/rctOps.cpp and
 // src/cryptonote_basic/cryptonote_format_utils.cpp. The CryptoNote functions
 // are checked against Monero's tests/crypto/tests.txt vectors.
@@ -171,14 +171,18 @@ export function derivePublicKey(derivationHex: string, index: number, baseHex: s
   return pointHex(times(Point.BASE, derivationToScalar(derivationHex, index)).add(base));
 }
 
-/** zarcanum_derivation_to_scalar: H(derivation_to_scalar || domain), reduced. */
-export function zarcanumDerivationToScalar(derivationHex: string, index: number, domain: string): bigint {
+/**
+ * zyphora_derivation_to_scalar (cryptonote_format_utils.cpp): keccak of
+ * derivation_to_scalar(derivation, index) || domain, then sc_reduce32. The
+ * wallet uses the domains "token_blind", "amount_mask" and "enc_amount".
+ */
+export function zyphoraDerivationToScalar(derivationHex: string, index: number, domain: string): bigint {
   const base = scalarToBytes(derivationToScalar(derivationHex, index));
   return reduce(bytesToNumberLE(keccak(concat(base, new TextEncoder().encode(domain)))));
 }
 
-/** X = 8 * hash_to_curve("beldex_asset_id_blinding_generator") (rctOps.cpp). */
-const X = Point.fromBytes(hashToEc(new TextEncoder().encode('beldex_asset_id_blinding_generator')));
+/** X = 8 * hash_to_curve("beldex_token_id_blinding_generator") (rctOps.cpp, init_ge_p3_X). */
+const X = Point.fromBytes(hashToEc(new TextEncoder().encode('beldex_token_id_blinding_generator')));
 
 function requirePoint(hex: string, label: string): EdPoint {
   const point = decodePoint(hex);
@@ -186,13 +190,16 @@ function requirePoint(hex: string, label: string): EdPoint {
   return point;
 }
 
-/** blindAssetId: T = asset_id + r * X. */
-export const blindAssetId = (assetIdHex: string, r: bigint) => pointHex(requirePoint(assetIdHex, 'asset id').add(times(X, r)));
+/** rct::blindTokenId: T = token_id + r * X. */
+export const blindTokenId = (tokenIdHex: string, r: bigint) => pointHex(requirePoint(tokenIdHex, 'token id').add(times(X, r)));
 
-/** unblindAssetId: asset_id = T - r * X. */
-export const unblindAssetId = (blindedHex: string, r: bigint) => pointHex(requirePoint(blindedHex, 'blinded asset id').subtract(times(X, r)));
+/** decode_zyphora_output step 2: token_id = T - r * X. */
+export const unblindTokenId = (blindedHex: string, r: bigint) => pointHex(requirePoint(blindedHex, 'blinded token id').subtract(times(X, r)));
 
-/** commitAsset: C = amount * asset_id + mask * G. */
-export function commitAsset(mask: bigint, assetIdHex: string, amount: bigint): string {
-  return pointHex(times(requirePoint(assetIdHex, 'asset id'), amount).add(times(Point.BASE, mask)));
+/**
+ * rct::commitToken: C = amount * T + mask * G, where T is the output's own
+ * BLINDED token id (not the plaintext id).
+ */
+export function commitToken(mask: bigint, blindedTokenIdHex: string, amount: bigint): string {
+  return pointHex(times(requirePoint(blindedTokenIdHex, 'blinded token id'), amount).add(times(Point.BASE, mask)));
 }

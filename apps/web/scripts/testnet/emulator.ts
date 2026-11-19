@@ -1,29 +1,27 @@
-// Offline emulator of beldex-wallet-rpc (feature-confidential-asset) and
-// beldexd JSON-RPC, backed by the deterministic MockChain. It speaks the same
-// method names and payload shapes BelFlow uses against the real testnet, so
-// the orchestrator can be exercised end to end in CI and with --emulate.
+// Offline emulator of beldex-wallet-rpc and beldexd JSON-RPC as built from
+// Beldex-Coin/beldex@feature-privacy-token, backed by the deterministic
+// MockChain. It speaks the method names and payload shapes BelFlow uses
+// against the real testnet, so the orchestrator can run end to end in CI and
+// with --emulate.
 //
 // Deliberate fidelity choices:
-// - check_tx_key returns only { received, in_pool, confirmations } (no asset_id), like Proto today.
+// - check_tx_key returns { received, token_received, in_pool, confirmations }:
+//   BDX in `received`, each privacy token in `token_received`.
+// - register_privacy_token takes the descriptor inline (json_string) and issues
+//   current_supply; registration fees and collateral are not modelled.
 // - Subaddresses get distinct addresses and are scanned by get_transfer_by_txid.
 //   Simplification: funds sent to a subaddress are not spendable by the parent
 //   account here (a real wallet would include them in the account balance).
-// - get_transactions exposes per-output asset tags only when `daemonAssetTags` is on.
-// - `checkTxKeyIgnoresAssets` mirrors wallet2::check_tx_key_helper on
-//   feature-confidential-asset (bc66339): it only scans txout_to_key outputs,
-//   so Confidential Asset outputs (tx_out_zarcanum) count as 0.
+// - get_transactions returns key-only outputs: MockChain does not build real
+//   tx_out_zyphora cryptography, so BelFlow's zyphora decoder is exercised by
+//   its unit tests and by the live run, not here.
 
-import { readFile } from 'node:fs/promises';
 import { FundsLockedError, InsufficientFundsError, MockChain, parseJsonSafe, stringifyJsonSafe } from '@belflow/sdk';
 
 export interface EmulatorOptions {
   seed?: string;
   /** BDX (atomic) credited to account 0 at start. 0 = unfunded wallet. */
   fundAtomic?: bigint;
-  /** Expose per-output asset tags in decoded transactions (format of real Proto txs is still unknown). */
-  daemonAssetTags?: boolean;
-  /** check_tx_key reports 0 for Confidential Asset outputs (outcome B, as the branch source suggests). */
-  checkTxKeyIgnoresAssets?: boolean;
 }
 
 type Params = Record<string, unknown>;
@@ -39,6 +37,8 @@ class RpcFault extends Error {
 }
 
 const FLASH_PRIORITY = 5;
+const NATIVE = 'BDX';
+const tokenIdOf = (assetId: string) => (assetId === NATIVE ? '' : assetId);
 
 export function createBeldexEmulator(options: EmulatorOptions = {}) {
   const chain = new MockChain({ seed: options.seed ?? 'belflow-emulator', startHeight: 4_283_500 });
@@ -57,12 +57,12 @@ export function createBeldexEmulator(options: EmulatorOptions = {}) {
   };
 
   const transfer = (params: Params) => {
-    const destinations = (params.destinations as Array<{ address: string; amount: number | string | bigint; asset_id?: string }>) ?? [];
+    const destinations = (params.destinations as Array<{ address: string; amount: number | string | bigint; token_id?: string }>) ?? [];
     const from = addressOf(params.account_index);
     return run(() =>
       chain.transfer(
         from,
-        destinations.map((d) => ({ address: d.address, assetId: d.asset_id || 'BDX', amount: BigInt(d.amount) })),
+        destinations.map((d) => ({ address: d.address, assetId: d.token_id || NATIVE, amount: BigInt(d.amount) })),
         { flash: Number(params.priority) === FLASH_PRIORITY },
       ),
     );
@@ -88,13 +88,13 @@ export function createBeldexEmulator(options: EmulatorOptions = {}) {
     store: () => ({}),
     get_balance: (p) => {
       const balances = chain.getBalances(addressOf(p.account_index));
-      const bdx = balances.BDX ?? { total: 0n, unlocked: 0n };
+      const bdx = balances[NATIVE] ?? { total: 0n, unlocked: 0n };
       return {
         balance: bdx.total,
         unlocked_balance: bdx.unlocked,
-        asset_balances: Object.entries(balances)
-          .filter(([id]) => id !== 'BDX')
-          .map(([id, b]) => ({ asset_id: id, ticker: chain.getAsset(id)?.ticker, balance: b.total, unlocked_balance: b.unlocked })),
+        token_balances: Object.entries(balances)
+          .filter(([id]) => id !== NATIVE)
+          .map(([id, b]) => ({ token_id: id, ticker: chain.getAsset(id)?.ticker, balance: b.total, unlocked_balance: b.unlocked })),
       };
     },
     transfer: (p) => {
@@ -105,10 +105,9 @@ export function createBeldexEmulator(options: EmulatorOptions = {}) {
       const tx = transfer(p);
       return { tx_hash_list: [tx.txHash], tx_key_list: [tx.txKey], fee_list: [BigInt(tx.fee)] };
     },
-    deploy_new_asset: async (p) => {
-      const descriptor = parseJsonSafe<{ ticker: string; full_name: string; current_supply: string | number; decimal_point: number }>(
-        await readFile(String(p.json_filename), 'utf8'),
-      );
+    register_privacy_token: (p) => {
+      if (typeof p.json_string !== 'string' || p.json_string === '') throw new RpcFault(-1, 'json_string is required by this emulator');
+      const descriptor = parseJsonSafe<{ ticker: string; full_name: string; current_supply: string | number; decimal_point: number }>(p.json_string);
       const { asset, tx } = run(() =>
         chain.deployAsset(addressOf(p.account_index), {
           ticker: descriptor.ticker,
@@ -117,25 +116,30 @@ export function createBeldexEmulator(options: EmulatorOptions = {}) {
           supply: BigInt(descriptor.current_supply),
         }),
       );
-      return { asset_id: asset.assetId, tx_hash: tx.txHash, tx_key: tx.txKey, ticker: asset.ticker, full_name: asset.name, tx_fee: BigInt(tx.fee) };
+      return { token_id: asset.assetId, tx_hash: tx.txHash, tx_key: tx.txKey, ticker: asset.ticker, full_name: asset.name, tx_fee: BigInt(tx.fee) };
     },
-    emit_asset: (p) => {
-      const tx = run(() => chain.emitAsset(addressOf(p.account_index), String(p.asset_id), BigInt(p.amount as string)));
+    mint_token: (p) => {
+      const tx = run(() => chain.emitAsset(addressOf(p.account_index), String(p.token_id), BigInt(p.amount as string)));
       return { tx_hash: tx.txHash, tx_key: tx.txKey, fee: BigInt(tx.fee) };
     },
-    get_owned_assets: () => ({ assets: chain.listAssets().map((a) => ({ asset_id: a.assetId, full_name: a.name, ticker: a.ticker, decimal_point: a.decimals })) }),
+    get_owned_tokens: () => ({
+      tokens: chain.listAssets().map((a) => ({ token_id: a.assetId, full_name: a.name, ticker: a.ticker, decimal_point: a.decimals })),
+    }),
     check_tx_key: (p) => {
       const check = run(() => chain.checkTxKey(String(p.txid), String(p.tx_key), String(p.address)));
-      const isAssetOutput = check.assetId !== undefined && check.assetId !== 'BDX';
-      const received = options.checkTxKeyIgnoresAssets && isAssetOutput ? 0n : check.receivedAtomic;
-      return { received, in_pool: check.inPool, confirmations: check.confirmations };
+      return {
+        received: check.receivedAtomic,
+        token_received: (check.tokenReceived ?? []).map((entry) => ({ token_id: entry.tokenId, amount: entry.amountAtomic })),
+        in_pool: check.inPool,
+        confirmations: check.confirmations,
+      };
     },
     get_transfer_by_txid: (p) => {
       const view = chain.getTransaction(String(p.txid));
       const transfers = [...owned].flatMap((address) =>
         chain
           .getIncomingTransfers(String(p.txid), address)
-          .map((entry) => ({ txid: p.txid, type: view?.inPool ? 'pool' : 'in', amount: entry.amount, address, asset_id: entry.assetId === 'BDX' ? '' : entry.assetId })),
+          .map((entry) => ({ txid: p.txid, type: view?.inPool ? 'pool' : 'in', amount: entry.amount, address, token_id: tokenIdOf(entry.assetId) })),
       );
       return { transfers };
     },
@@ -145,7 +149,7 @@ export function createBeldexEmulator(options: EmulatorOptions = {}) {
         txid: tx.txHash,
         height: tx.height ?? 0,
         timestamp: tx.timestamp,
-        destinations: tx.outputs.map((o) => ({ address: o.address, amount: BigInt(o.amount), asset_id: o.assetId === 'BDX' ? '' : o.assetId })),
+        destinations: tx.outputs.map((o) => ({ address: o.address, amount: BigInt(o.amount), token_id: tokenIdOf(o.assetId) })),
       });
       return { out: txs.filter((tx) => tx.height !== null).map(entry), pool: txs.filter((tx) => tx.height === null).map(entry) };
     },
@@ -156,14 +160,16 @@ export function createBeldexEmulator(options: EmulatorOptions = {}) {
   const daemon: Record<string, Handler> = {
     get_info: () => ({ height: chain.height + 1, nettype: 'testnet', testnet: true, status: 'OK', current_hf_version: 22 }),
     get_fee_estimate: () => ({ fee_per_output: 10_000_000, fee_per_byte: 6_510 }),
+    get_token_info: (p) => {
+      const asset = chain.getAsset(String(p.token_id));
+      if (!asset) throw new RpcFault(-1, 'Token not found');
+      return { token_id: asset.assetId, ticker: asset.ticker, full_name: asset.name, current_supply: asset.currentSupply, total_max_supply: asset.currentSupply, decimal_point: asset.decimals };
+    },
     get_transactions: (p) => ({
       txs: ((p.txs_hashes as string[]) ?? []).flatMap((hash) => {
         const view = chain.getTransaction(hash);
         if (!view) return [];
-        const outputs = view.assetIds.map((assetId, index) => ({
-          amount: 0,
-          target: { key: `${hash.slice(0, 60)}${index.toString(16).padStart(4, '0')}`, ...(options.daemonAssetTags ? { asset_id: assetId === 'BDX' ? '' : assetId } : {}) },
-        }));
+        const outputs = view.assetIds.map((_assetId, index) => ({ amount: 0, target: { key: `${hash.slice(0, 60)}${index.toString(16).padStart(4, '0')}` } }));
         return [{ tx_hash: hash, in_pool: view.inPool, flash: view.flash, block_height: view.blockHeight ?? 0, as_json: JSON.stringify({ version: 4, vout: outputs }) }];
       }),
     }),

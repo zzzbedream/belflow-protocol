@@ -19,16 +19,16 @@ export * from './compliance/declaration';
 export * from './compliance/verifier';
 export * from './compliance/txInspection';
 export * from './compliance/proof';
-export * from './zarcanum/decode';
+export * from './zyphora/decode';
 export {
-  blindAssetId,
-  commitAsset,
+  blindTokenId,
+  commitToken,
   derivePublicKey,
   generateKeyDerivation,
   hashToEc,
-  unblindAssetId,
-  zarcanumDerivationToScalar,
-} from './zarcanum/cryptonote';
+  unblindTokenId,
+  zyphoraDerivationToScalar,
+} from './zyphora/cryptonote';
 
 export * from './mock/MockChain';
 export * from './mock/api';

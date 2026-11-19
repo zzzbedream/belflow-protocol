@@ -1,5 +1,5 @@
 import { BDX_DECIMALS, NATIVE_TOKEN_ID } from '../constants';
-import { AssetMismatchError, ValidationError } from '../errors';
+import { AssetMismatchError, ValidationError, belflowErrorCode } from '../errors';
 import { formatUnits } from '../units';
 import { buildPaymentDeclaration } from './declaration';
 import type { AssetVerificationLevel, TxKeyCheck, VerificationResult } from '../types';
@@ -16,8 +16,8 @@ export function normalizeAssetId(assetId: string): string {
 
 /**
  * Receiver-side verification when the payer cannot export a tx key (browser
- * extension checkout). The merchant's own wallet reports what it received;
- * the decoded tx is the fallback for asset attribution.
+ * extension checkout). The merchant's own wallet reports what it received and
+ * in which token; the decoded tx only says whether a mempool tx is flash.
  */
 export async function verifyReceivedPayment(
   claim: Omit<PaymentClaim, 'txKey'>,
@@ -41,12 +41,6 @@ export async function verifyReceivedPayment(
     if (tagged.every((entry) => normalizeAssetId(entry.assetId as string) === assetId)) level = 'CRYPTOGRAPHIC_FULL';
     else failures.push('ASSET_MISMATCH');
   }
-  const daemonAssets = inspection?.assetIds ? [...new Set(inspection.assetIds.map(normalizeAssetId))] : null;
-  if (daemonAssets) {
-    if (!daemonAssets.includes(assetId)) failures.push('ASSET_MISMATCH');
-    else if (daemonAssets.length === 1 && level === null) level = 'DAEMON_EXTRACTED';
-  }
-
   if (received === 0n) failures.push('NO_OUTPUT_FOR_RECIPIENT');
   else if (options.amountMatch === 'exact' && received !== claim.amountAtomic) failures.push('AMOUNT_MISMATCH');
   else if (options.amountMatch === 'at-least' && received < claim.amountAtomic) failures.push('AMOUNT_INSUFFICIENT');
@@ -120,10 +114,11 @@ export interface PaymentClaim {
   amountAtomic: bigint;
 }
 
-/** Decoded transaction as seen by the daemon or a block explorer. */
+/**
+ * Decoded transaction as seen by the daemon or a block explorer. It carries no
+ * token identity: tx_out_zyphora outputs only expose a blinded token id.
+ */
 export interface TxInspection {
-  /** Asset ids visible in the transaction outputs, or null when the format hides them. */
-  assetIds: string[] | null;
   isFlash: boolean;
   inPool: boolean;
   blockHeight: number | null;
@@ -131,21 +126,21 @@ export interface TxInspection {
 
 /** Evidence sources. Only Layer A is mandatory. */
 export interface VerificationSources {
-  /** Layer A: check_tx_key (amount + recipient). */
+  /** Layer A: check_tx_key (BDX amount, plus token_received on feature-privacy-token). */
   checkTxKey(txHash: string, txKey: string, address: string): Promise<TxKeyCheck>;
   /** Layer B1: the receiving wallet's view (get_transfer_by_txid). */
   receiverTransfers?(txHash: string, address: string): Promise<Array<{ assetId?: string; amountAtomic: bigint }> | null>;
-  /** Layer B2: decoded transaction from the daemon (or explorer). */
+  /** Layer B2: decoded transaction from the daemon (or explorer): flash and pool status only. */
   inspectTx?(txHash: string): Promise<TxInspection | null>;
   /** Layer B3: verifies a payer signature over the canonical declaration. */
   verifySignature?(message: string, address: string, signature: string): Promise<boolean>;
   /**
-   * Layer A for Confidential Assets: decodes tx_out_zarcanum outputs with the
-   * tx_key (amount and asset, commitment-checked). Needed because
-   * check_tx_key on feature-confidential-asset does not count those outputs.
+   * Independent Layer A for privacy tokens: decodes tx_out_zyphora outputs
+   * with the tx_key and no wallet (amount and token, commitment-checked).
+   * When check_tx_key also reports token_received, both must agree.
    * Null when the transaction has no such outputs.
    */
-  zarcanumTxKey?(txHash: string, txKey: string, address: string): Promise<Array<{ assetId: string; amountAtomic: bigint }> | null>;
+  zyphoraTxKey?(txHash: string, txKey: string, address: string): Promise<Array<{ tokenId: string; amountAtomic: bigint }> | null>;
 }
 
 export interface VerifyPaymentOptions {
@@ -179,8 +174,7 @@ export interface PaymentVerification {
 }
 
 const LEVEL_RANK: Record<AssetVerificationLevel, number> = {
-  CRYPTOGRAPHIC_FULL: 3,
-  DAEMON_EXTRACTED: 2,
+  CRYPTOGRAPHIC_FULL: 2,
   ISSUER_SIGNED_DECLARATION: 1,
 };
 
@@ -197,12 +191,33 @@ async function attempt<T>(label: string, notes: string[], run: () => Promise<T>)
   }
 }
 
+const sumAtomic = (entries: Array<{ amountAtomic: bigint }>) => entries.reduce((sum, entry) => sum + entry.amountAtomic, 0n);
+
 /**
- * Two-layer verification against asset confusion. Layer A (check_tx_key)
- * proves the amount reached the recipient. Layer B proves which asset it was:
- * receiving wallet or node attribution (CRYPTOGRAPHIC_FULL), decoded tx tags
- * (DAEMON_EXTRACTED) or the payer's signed declaration
- * (ISSUER_SIGNED_DECLARATION). Any contradiction invalidates the payment.
+ * Layer A on feature-privacy-token: check_tx_key reports native BDX in
+ * `received` and each token in `token_received`, so the claimed token's
+ * amount is attributed cryptographically. Anything else paid to the same
+ * address in the same transaction is a contradiction.
+ */
+function attributeTxKeyCheck(
+  check: TxKeyCheck,
+  tokenId: string,
+): { receivedAtomic: bigint; attributed: boolean; contradiction: boolean } {
+  if (check.tokenReceived === undefined) return { receivedAtomic: check.receivedAtomic, attributed: false, contradiction: false };
+  const tokens = check.tokenReceived.map((entry) => ({ tokenId: normalizeAssetId(entry.tokenId), amountAtomic: entry.amountAtomic }));
+  const isNative = tokenId === NATIVE_TOKEN_ID;
+  const claimed = isNative ? check.receivedAtomic : sumAtomic(tokens.filter((entry) => entry.tokenId === tokenId));
+  const other = (isNative ? 0n : check.receivedAtomic) + sumAtomic(tokens.filter((entry) => entry.tokenId !== tokenId));
+  return { receivedAtomic: claimed, attributed: claimed > 0n && other === 0n, contradiction: other > 0n };
+}
+
+/**
+ * Layered verification against token confusion. Layer A proves the amount
+ * and the token that reached the recipient: check_tx_key's token_received,
+ * cross-checked by the wallet-free zyphora decode when available
+ * (CRYPTOGRAPHIC_FULL). Layer B adds the receiving wallet's view, flash
+ * status and the payer's signed declaration (ISSUER_SIGNED_DECLARATION).
+ * Any contradiction invalidates the payment.
  */
 export async function verifyPayment(
   rawClaim: PaymentClaim,
@@ -215,54 +230,71 @@ export async function verifyPayment(
   const notes: string[] = [];
   let level: AssetVerificationLevel | null = null;
 
-  // Layer A: amount and recipient.
-  const rawCheck = await sources.checkTxKey(claim.txHash, claim.txKey, claim.recipientAddress);
-  const check = rawCheck.assetId === undefined ? rawCheck : { ...rawCheck, assetId: normalizeAssetId(rawCheck.assetId) };
+  // Layer A: check_tx_key (amount, recipient and, on feature-privacy-token, the token).
+  const check = await sources.checkTxKey(claim.txHash, claim.txKey, claim.recipientAddress);
+  const fromCheck = attributeTxKeyCheck(check, claim.assetId);
+  let receivedAtomic = fromCheck.receivedAtomic;
+  if (fromCheck.contradiction) failures.push('ASSET_MISMATCH');
+  else if (fromCheck.attributed) level = 'CRYPTOGRAPHIC_FULL';
 
-  // Layer A for Confidential Assets: the tx_key decodes amount and asset of
-  // tx_out_zarcanum outputs, which check_tx_key does not count.
-  const zarcanum = sources.zarcanumTxKey
-    ? await attempt('zarcanum tx_key decode', notes, () => sources.zarcanumTxKey!(claim.txHash, claim.txKey, claim.recipientAddress))
-    : null;
-  let receivedAtomic = check.receivedAtomic;
-  if (zarcanum && zarcanum.length > 0) {
-    const matching = zarcanum.filter((output) => normalizeAssetId(output.assetId) === claim.assetId);
-    receivedAtomic = matching.reduce((sum, output) => sum + output.amountAtomic, 0n);
-    if (matching.length === zarcanum.length) level = 'CRYPTOGRAPHIC_FULL';
-    else failures.push('ASSET_MISMATCH');
+  // Independent Layer A: wallet-free decode of tx_out_zyphora outputs with the tx_key.
+  // null = no decoder or no zyphora outputs in the tx; [] = zyphora outputs, none paying the address.
+  let zyphora: Array<{ tokenId: string; amountAtomic: bigint }> | null = null;
+  if (sources.zyphoraTxKey) {
+    try {
+      zyphora = await sources.zyphoraTxKey(claim.txHash, claim.txKey, claim.recipientAddress);
+    } catch (error) {
+      // A commitment or format failure is evidence of forged or inconsistent data, not an outage.
+      if (belflowErrorCode(error) === 'VALIDATION') failures.push('ASSET_MISMATCH');
+      notes.push(`zyphora tx_key decode unavailable: ${(error as Error).message}`);
+    }
+  }
+  const tokensFromCheck = sumAtomic(check.tokenReceived ?? []);
+  if (zyphora && zyphora.length === 0 && tokensFromCheck > 0n) {
+    failures.push('ASSET_MISMATCH');
+    notes.push('check_tx_key reports tokens that the wallet-free zyphora decode cannot find.');
+  } else if (zyphora && zyphora.length > 0) {
+    const matching = zyphora.filter((output) => normalizeAssetId(output.tokenId) === claim.assetId);
+    const decodedAtomic = sumAtomic(matching);
+    // Without token_received, `received` is unattributed: it may count the token outputs or only BDX.
+    const unattributedExtra = check.tokenReceived === undefined && check.receivedAtomic !== 0n && check.receivedAtomic !== decodedAtomic;
+    if (matching.length !== zyphora.length || unattributedExtra) failures.push('ASSET_MISMATCH');
+    else if (check.tokenReceived !== undefined && decodedAtomic !== fromCheck.receivedAtomic) {
+      failures.push('ASSET_MISMATCH');
+      notes.push('The wallet-free zyphora decode disagrees with check_tx_key.');
+    } else {
+      receivedAtomic = decodedAtomic;
+      level = 'CRYPTOGRAPHIC_FULL';
+    }
   }
 
   if (receivedAtomic === 0n) failures.push('NO_OUTPUT_FOR_RECIPIENT');
   else if (options.amountMatch === 'exact' && receivedAtomic !== claim.amountAtomic) failures.push('AMOUNT_MISMATCH');
   else if (options.amountMatch === 'at-least' && receivedAtomic < claim.amountAtomic) failures.push('AMOUNT_INSUFFICIENT');
 
-  if (check.assetId !== undefined) {
-    if (check.assetId === claim.assetId) level = strongest(level, 'CRYPTOGRAPHIC_FULL');
-    else failures.push('ASSET_MISMATCH');
-  }
-
   // Layer B1: receiving wallet.
   const incoming = sources.receiverTransfers
     ? await attempt('get_transfer_by_txid', notes, () => sources.receiverTransfers!(claim.txHash, claim.recipientAddress))
     : null;
-  const attributed = (incoming ?? []).filter((entry) => entry.assetId !== undefined);
-  if (attributed.length > 0) {
-    if (attributed.every((entry) => normalizeAssetId(entry.assetId as string) === claim.assetId)) {
+  const walletEntries = incoming ?? [];
+  const attributed = walletEntries.filter((entry) => entry.assetId !== undefined);
+  if (attributed.some((entry) => normalizeAssetId(entry.assetId as string) !== claim.assetId)) {
+    failures.push('ASSET_MISMATCH');
+  } else if (attributed.length > 0) {
+    // The wallet view attributes the token only when it accounts for every entry and for the
+    // exact amount Layer A proved; a partial or different view adds no evidence.
+    const walletAtomic = sumAtomic(attributed);
+    if (attributed.length === walletEntries.length && walletAtomic === receivedAtomic) {
       level = strongest(level, 'CRYPTOGRAPHIC_FULL');
+    } else {
+      notes.push('The receiving wallet view does not match the amount proven by check_tx_key; it does not attribute the token.');
     }
-    else failures.push('ASSET_MISMATCH');
   }
 
-  // Layer B2: decoded transaction (also tells us whether a mempool tx is flash).
+  // Layer B2: decoded transaction, only to tell whether a mempool tx is flash.
   const inspection = sources.inspectTx
     ? await attempt('get_transactions', notes, () => sources.inspectTx!(claim.txHash))
     : null;
-  if (inspection?.assetIds) {
-    const assets = [...new Set(inspection.assetIds.map(normalizeAssetId))];
-    if (!assets.includes(claim.assetId)) failures.push('ASSET_MISMATCH');
-    else if (assets.length === 1) level = strongest(level, 'DAEMON_EXTRACTED');
-    else notes.push('Transaction carries several assets; daemon tags cannot attribute this output.');
-  }
 
   // Layer B3: payer's signed declaration.
   if (options.issuer && sources.verifySignature) {

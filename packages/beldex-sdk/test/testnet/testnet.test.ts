@@ -1,5 +1,4 @@
-import { mkdir, rm, writeFile } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createRpcBnsBackend, BnsResolver } from '../../src/bns/resolver';
@@ -16,8 +15,7 @@ import { WalletRpc } from '../../src/rpc/wallet';
 //   BELDEX_TESTNET_E2E=1                 enable the suite
 //   BELDEX_EXPLORER_API_URL              defaults to https://testnet.beldex.dev/api
 //   BELDEX_DAEMON_RPC_URL                beldexd testnet RPC
-//   BELDEX_WALLET_RPC_URL (+ _USER/_PASSWORD)  wallet-rpc from feature-confidential-asset
-//   BELDEX_ASSET_DESCRIPTOR_DIR          directory shared with wallet-rpc
+//   BELDEX_WALLET_RPC_URL (+ _USER/_PASSWORD)  wallet-rpc from feature-privacy-token
 //   BELDEX_TESTNET_BNS_NAME              a registered .bdx name to resolve
 // Findings are written to test/testnet/findings.json for the upstream report.
 
@@ -79,21 +77,14 @@ describe.skipIf(!enabled)('Beldex Testnet (live)', () => {
     await saveFindings();
   });
 
-  it.skipIf(!hasWallet || !env.BELDEX_ASSET_DESCRIPTOR_DIR)(
-    'steps 2-4: deploy bUSD, multi-output transfer with tx key, check_tx_key per output and asset-tag investigation',
+  it.skipIf(!hasWallet)(
+    'steps 2-4: register a token, multi-output token transfer with tx key, check_tx_key token_received per output',
     async () => {
       const w = wallet as WalletRpc;
-      const dir = path.resolve(env.BELDEX_ASSET_DESCRIPTOR_DIR as string);
-      await mkdir(dir, { recursive: true });
       const provider = new WalletRpcProvider({
         wallet: w,
         ...(daemon ? { daemon } : { explorerApiUrl: explorerUrl }),
         network: 'testnet',
-        writeAssetDescriptor: async (descriptor) => {
-          const file = path.join(dir, `${randomUUID()}.json`);
-          await writeFile(file, stringifyJsonSafe(descriptor), 'utf8');
-          return { path: file, cleanup: () => rm(file, { force: true }) };
-        },
       });
 
       const ticker = `bU${Date.now().toString(36).slice(-6).toUpperCase()}`;
@@ -104,7 +95,7 @@ describe.skipIf(!enabled)('Beldex Testnet (live)', () => {
         [0, 1, 2].map(async (i) => (await w.client.call<{ address: string }>('create_address', { account_index: 0, label: `belflow-${i}` })).address),
       );
       const balance = await w.getBalance();
-      findings.assetBalances = balance.asset_balances;
+      findings.tokenBalances = balance.token_balances;
 
       let parts;
       for (let attempt = 0; ; attempt += 1) {
@@ -129,6 +120,11 @@ describe.skipIf(!enabled)('Beldex Testnet (live)', () => {
         checks.push({ expectedAtomic: (i + 1) * 1_000_000, raw });
       }
       findings.checkTxKeyOnTokenTx = checks;
+      // Acceptance: check_tx_key reports exactly the amount sent, in the registered token.
+      for (const { expectedAtomic, raw } of checks) {
+        const paid = (raw.token_received ?? []).filter((entry) => entry.token_id.toLowerCase() === token.tokenId.toLowerCase());
+        expect(paid.reduce((sum, entry) => sum + BigInt(entry.amount), 0n)).toBe(BigInt(expectedAtomic));
+      }
 
       const inspect = daemon ? createDaemonTxInspector(daemon) : createExplorerTxInspector(explorerUrl);
       findings.decodedTxInspection = await inspect(first!.txHash);
@@ -139,6 +135,7 @@ describe.skipIf(!enabled)('Beldex Testnet (live)', () => {
         provider.verificationSources(),
         { amountMatch: 'exact', allowFlashInPool: true },
       );
+      expect(findings.dualVerification).toMatchObject({ assetVerificationLevel: 'CRYPTOGRAPHIC_FULL' });
       await saveFindings();
     },
   );

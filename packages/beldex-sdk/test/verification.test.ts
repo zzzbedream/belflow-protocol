@@ -1,14 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { buildPaymentDeclaration, canonicalJson, parsePaymentDeclaration } from '../src/compliance/declaration';
 import { buildAuditProofPackage, verifyPackageIntegrity } from '../src/compliance/proof';
-import { createExplorerTxInspector, extractAssetIds, inspectionFromDecodedTx } from '../src/compliance/txInspection';
+import { createExplorerTxInspector, inspectionFromDecodedTx } from '../src/compliance/txInspection';
 import { verifyPayment, verifyReceivedPayment, type VerificationSources } from '../src/compliance/verifier';
 import type { TxKeyCheck } from '../src/types';
 import { HASH_A } from './helpers';
 
 const USD = 'c'.repeat(64);
+const OTHER = 'd'.repeat(64);
 const claim = { txHash: HASH_A, txKey: 'k'.repeat(64), recipientAddress: 'addr', assetId: USD, amountAtomic: 500_000n };
+/** A check_tx_key backend that cannot attribute tokens (no token_received). */
 const confirmed: TxKeyCheck = { receivedAtomic: 500_000n, inPool: false, confirmations: 3, blockHeight: 100 };
+/** check_tx_key on feature-privacy-token: no BDX, one token entry. */
+const tokenCheck = (amountAtomic: bigint, tokenId = USD): TxKeyCheck => ({ ...confirmed, receivedAtomic: 0n, tokenReceived: [{ tokenId, amountAtomic }] });
 
 function sources(overrides: Partial<VerificationSources> & { check?: TxKeyCheck } = {}): VerificationSources {
   const { check = confirmed, ...rest } = overrides;
@@ -37,10 +41,15 @@ describe('declaration', () => {
   });
 });
 
-describe('verifyPayment (dual verification)', () => {
-  it('reaches CRYPTOGRAPHIC_FULL when the node attributes the asset', async () => {
-    const result = await verifyPayment(claim, sources({ check: { ...confirmed, assetId: USD } }), { amountMatch: 'exact' });
-    expect(result).toMatchObject({ isValid: true, assetVerificationLevel: 'CRYPTOGRAPHIC_FULL', blockHeight: 100 });
+describe('verifyPayment (layered verification)', () => {
+  it('reaches CRYPTOGRAPHIC_FULL when check_tx_key reports the token in token_received', async () => {
+    const result = await verifyPayment(claim, sources({ check: tokenCheck(500_000n) }), { amountMatch: 'exact' });
+    expect(result).toMatchObject({ isValid: true, receivedAtomic: 500_000n, assetVerificationLevel: 'CRYPTOGRAPHIC_FULL', blockHeight: 100 });
+  });
+
+  it('attributes a BDX payment from check_tx_key `received` when tokens are reported separately', async () => {
+    const bdx = await verifyPayment({ ...claim, assetId: 'BDX' }, sources({ check: { ...confirmed, tokenReceived: [] } }), { amountMatch: 'exact' });
+    expect(bdx).toMatchObject({ isValid: true, assetVerificationLevel: 'CRYPTOGRAPHIC_FULL' });
   });
 
   it('reaches CRYPTOGRAPHIC_FULL through the receiving wallet', async () => {
@@ -52,13 +61,36 @@ describe('verifyPayment (dual verification)', () => {
     expect(result.assetVerificationLevel).toBe('CRYPTOGRAPHIC_FULL');
   });
 
-  it('falls back to DAEMON_EXTRACTED from decoded tx tags', async () => {
-    const result = await verifyPayment(
+  it('lets the receiving wallet attribute the token only for the exact proven amount and every entry', async () => {
+    const differentAmount = await verifyPayment(
       claim,
-      sources({ inspectTx: async () => ({ assetIds: [USD], isFlash: false, inPool: false, blockHeight: 100 }) }),
+      sources({ receiverTransfers: async () => [{ assetId: USD, amountAtomic: 1n }] }),
       { amountMatch: 'exact' },
     );
-    expect(result.assetVerificationLevel).toBe('DAEMON_EXTRACTED');
+    expect(differentAmount.failures).toEqual(['ASSET_UNVERIFIABLE']);
+    expect(differentAmount.notes.join(' ')).toMatch(/does not match the amount/);
+    const partialView = await verifyPayment(
+      claim,
+      sources({ receiverTransfers: async () => [{ assetId: USD, amountAtomic: 500_000n }, { amountAtomic: 9n }] }),
+      { amountMatch: 'exact' },
+    );
+    expect(partialView.failures).toEqual(['ASSET_UNVERIFIABLE']);
+    const wrongTokenNextToRight = await verifyPayment(
+      claim,
+      sources({ receiverTransfers: async () => [{ assetId: USD, amountAtomic: 500_000n }, { assetId: OTHER, amountAtomic: 1n }] }),
+      { amountMatch: 'exact' },
+    );
+    expect(wrongTokenNextToRight.failures).toContain('ASSET_MISMATCH');
+  });
+
+  it('never attributes a token from the decoded transaction (token ids are blinded)', async () => {
+    const result = await verifyPayment(
+      claim,
+      sources({ inspectTx: async () => ({ isFlash: false, inPool: false, blockHeight: 100 }) }),
+      { amountMatch: 'exact' },
+    );
+    expect(result.failures).toEqual(['ASSET_UNVERIFIABLE']);
+    expect(result.assetVerificationLevel).toBeNull();
   });
 
   it('falls back to ISSUER_SIGNED_DECLARATION and checks the exact message', async () => {
@@ -66,7 +98,7 @@ describe('verifyPayment (dual verification)', () => {
     const result = await verifyPayment(
       claim,
       sources({
-        inspectTx: async () => ({ assetIds: null, isFlash: false, inPool: false, blockHeight: 100 }),
+        inspectTx: async () => ({ isFlash: false, inPool: false, blockHeight: 100 }),
         verifySignature: async (message) => {
           seen.push(message);
           return true;
@@ -78,13 +110,10 @@ describe('verifyPayment (dual verification)', () => {
     expect(seen[0]).toBe(`belflow-proof-v1|${HASH_A}|${USD}|500000|addr`);
   });
 
-  it('rejects asset confusion: BDX paid where bUSD was claimed', async () => {
+  it('rejects token confusion: BDX paid where bUSD was claimed, even with a valid declaration', async () => {
     const result = await verifyPayment(
       claim,
-      sources({
-        inspectTx: async () => ({ assetIds: ['BDX'], isFlash: false, inPool: false, blockHeight: 100 }),
-        verifySignature: async () => true,
-      }),
+      sources({ check: { ...confirmed, tokenReceived: [] }, verifySignature: async () => true }),
       { amountMatch: 'exact', issuer: { address: 'issuer', signature: 'sig' } },
     );
     expect(result.isValid).toBe(false);
@@ -92,20 +121,28 @@ describe('verifyPayment (dual verification)', () => {
     expect(result.assetVerificationLevel).toBeNull();
   });
 
-  it('rejects contradictions from the node and the receiving wallet', async () => {
-    const node = await verifyPayment(claim, sources({ check: { ...confirmed, assetId: 'BDX' } }), { amountMatch: 'exact' });
+  it('rejects contradictions from check_tx_key and the receiving wallet', async () => {
+    const node = await verifyPayment(claim, sources({ check: tokenCheck(500_000n, OTHER) }), { amountMatch: 'exact' });
     expect(node.failures).toContain('ASSET_MISMATCH');
+    const extra = await verifyPayment(
+      claim,
+      sources({ check: { ...tokenCheck(500_000n), tokenReceived: [{ tokenId: USD, amountAtomic: 500_000n }, { tokenId: OTHER, amountAtomic: 1n }] } }),
+      { amountMatch: 'exact' },
+    );
+    expect(extra.failures).toContain('ASSET_MISMATCH');
     const wallet = await verifyPayment(claim, sources({ receiverTransfers: async () => [{ assetId: 'BDX', amountAtomic: 1n }] }), {
       amountMatch: 'exact',
     });
     expect(wallet.failures).toContain('ASSET_MISMATCH');
   });
 
-  it('normalizes asset id case and rejects non-positive claims', async () => {
-    const upper = await verifyPayment({ ...claim, assetId: USD.toUpperCase() }, sources({ check: { ...confirmed, assetId: USD } }), {
+  it('normalizes token id case and rejects non-positive claims', async () => {
+    const upper = await verifyPayment({ ...claim, assetId: USD.toUpperCase() }, sources({ check: tokenCheck(500_000n) }), {
       amountMatch: 'exact',
     });
     expect(upper.isValid).toBe(true);
+    const upperFromNode = await verifyPayment(claim, sources({ check: tokenCheck(500_000n, USD.toUpperCase()) }), { amountMatch: 'exact' });
+    expect(upperFromNode.isValid).toBe(true);
     await expect(verifyPayment({ ...claim, amountAtomic: 0n }, sources(), { amountMatch: 'at-least' })).rejects.toThrow(/positive/);
   });
 
@@ -113,17 +150,11 @@ describe('verifyPayment (dual verification)', () => {
     expect((await verifyPayment(claim, sources(), { amountMatch: 'exact' })).failures).toEqual(['ASSET_UNVERIFIABLE']);
     const none = await verifyPayment(claim, sources({ check: { ...confirmed, receivedAtomic: 0n } }), { amountMatch: 'exact' });
     expect(none.failures).toContain('NO_OUTPUT_FOR_RECIPIENT');
-    const over = await verifyPayment(claim, sources({ check: { ...confirmed, receivedAtomic: 600_000n, assetId: USD } }), {
-      amountMatch: 'exact',
-    });
+    const over = await verifyPayment(claim, sources({ check: tokenCheck(600_000n) }), { amountMatch: 'exact' });
     expect(over.failures).toEqual(['AMOUNT_MISMATCH']);
-    const overOk = await verifyPayment(claim, sources({ check: { ...confirmed, receivedAtomic: 600_000n, assetId: USD } }), {
-      amountMatch: 'at-least',
-    });
+    const overOk = await verifyPayment(claim, sources({ check: tokenCheck(600_000n) }), { amountMatch: 'at-least' });
     expect(overOk.isValid).toBe(true);
-    const under = await verifyPayment(claim, sources({ check: { ...confirmed, receivedAtomic: 1n, assetId: USD } }), {
-      amountMatch: 'at-least',
-    });
+    const under = await verifyPayment(claim, sources({ check: tokenCheck(1n) }), { amountMatch: 'at-least' });
     expect(under.failures).toEqual(['AMOUNT_INSUFFICIENT']);
     const badSig = await verifyPayment(claim, sources({ verifySignature: async () => false }), {
       amountMatch: 'exact',
@@ -133,22 +164,22 @@ describe('verifyPayment (dual verification)', () => {
   });
 
   it('accepts mempool payments only when the daemon marks them flash', async () => {
-    const pool = { ...confirmed, inPool: true, blockHeight: null, assetId: USD };
+    const pool = { ...tokenCheck(500_000n), inPool: true, blockHeight: null };
     const normal = await verifyPayment(
       claim,
-      sources({ check: pool, inspectTx: async () => ({ assetIds: null, isFlash: false, inPool: true, blockHeight: null }) }),
+      sources({ check: pool, inspectTx: async () => ({ isFlash: false, inPool: true, blockHeight: null }) }),
       { amountMatch: 'at-least', allowFlashInPool: true },
     );
     expect(normal.failures).toEqual(['NOT_CONFIRMED']);
     const flash = await verifyPayment(
       claim,
-      sources({ check: pool, inspectTx: async () => ({ assetIds: null, isFlash: true, inPool: true, blockHeight: null }) }),
+      sources({ check: pool, inspectTx: async () => ({ isFlash: true, inPool: true, blockHeight: null }) }),
       { amountMatch: 'at-least', allowFlashInPool: true },
     );
     expect(flash).toMatchObject({ isValid: true, isFlash: true, inPool: true });
     const auditFlash = await verifyPayment(
       claim,
-      sources({ check: pool, inspectTx: async () => ({ assetIds: null, isFlash: true, inPool: true, blockHeight: null }) }),
+      sources({ check: pool, inspectTx: async () => ({ isFlash: true, inPool: true, blockHeight: null }) }),
       { amountMatch: 'exact' },
     );
     expect(auditFlash.failures).toEqual(['NOT_CONFIRMED']);
@@ -158,7 +189,7 @@ describe('verifyPayment (dual verification)', () => {
     const result = await verifyPayment(
       claim,
       sources({
-        check: { ...confirmed, assetId: USD },
+        check: tokenCheck(500_000n),
         inspectTx: async () => {
           throw new Error('daemon down');
         },
@@ -169,21 +200,11 @@ describe('verifyPayment (dual verification)', () => {
     expect(result.isValid).toBe(true);
     expect(result.notes[0]).toMatch(/daemon down/);
   });
-
-  it('notes multi-asset transactions without granting a level', async () => {
-    const result = await verifyPayment(
-      claim,
-      sources({ inspectTx: async () => ({ assetIds: [USD, 'BDX'], isFlash: false, inPool: false, blockHeight: 1 }) }),
-      { amountMatch: 'exact' },
-    );
-    expect(result.failures).toEqual(['ASSET_UNVERIFIABLE']);
-    expect(result.notes[0]).toMatch(/several assets/);
-  });
 });
 
 describe('verifyReceivedPayment (receiver side, no tx key)', () => {
   const base = { txHash: HASH_A, recipientAddress: 'addr', assetId: USD, amountAtomic: 500_000n };
-  const pool = { assetIds: null, isFlash: true, inPool: true, blockHeight: null };
+  const pool = { isFlash: true, inPool: true, blockHeight: null };
 
   it('accepts a flash payment attributed by the receiving wallet', async () => {
     const result = await verifyReceivedPayment(
@@ -194,7 +215,7 @@ describe('verifyReceivedPayment (receiver side, no tx key)', () => {
     expect(result).toMatchObject({ isValid: true, assetVerificationLevel: 'CRYPTOGRAPHIC_FULL', isFlash: true });
   });
 
-  it('rejects untagged, wrong-asset, short and unconfirmed payments', async () => {
+  it('rejects untagged, wrong-token, short and unconfirmed payments', async () => {
     const untagged = await verifyReceivedPayment(base, { receiverTransfers: async () => [{ amountAtomic: 500_000n }] }, { amountMatch: 'exact' });
     expect(untagged.failures).toEqual(['ASSET_UNVERIFIABLE']);
     const wrong = await verifyReceivedPayment(base, { receiverTransfers: async () => [{ assetId: 'BDX', amountAtomic: 500_000n }] }, { amountMatch: 'exact' });
@@ -203,50 +224,32 @@ describe('verifyReceivedPayment (receiver side, no tx key)', () => {
     expect(short.failures).toEqual(['AMOUNT_INSUFFICIENT']);
     const exact = await verifyReceivedPayment(base, { receiverTransfers: async () => [{ assetId: USD, amountAtomic: 1n }] }, { amountMatch: 'exact' });
     expect(exact.failures).toEqual(['AMOUNT_MISMATCH']);
-    const none = await verifyReceivedPayment(base, { inspectTx: async () => ({ ...pool, isFlash: false, assetIds: [USD] }) }, { amountMatch: 'exact' });
-    expect(none.failures).toEqual(['NO_OUTPUT_FOR_RECIPIENT', 'NOT_CONFIRMED']);
+    const none = await verifyReceivedPayment(base, { inspectTx: async () => ({ ...pool, isFlash: false }) }, { amountMatch: 'exact' });
+    expect(none.failures).toEqual(['NO_OUTPUT_FOR_RECIPIENT', 'NOT_CONFIRMED', 'ASSET_UNVERIFIABLE']);
     const daemonOnly = await verifyReceivedPayment(
       base,
       {
         receiverTransfers: async () => [{ amountAtomic: 500_000n }],
-        inspectTx: async () => ({ assetIds: [USD], isFlash: false, inPool: false, blockHeight: 3 }),
+        inspectTx: async () => ({ isFlash: false, inPool: false, blockHeight: 3 }),
       },
       { amountMatch: 'exact' },
     );
-    expect(daemonOnly.assetVerificationLevel).toBe('DAEMON_EXTRACTED');
-    const daemonWrong = await verifyReceivedPayment(
-      base,
-      { receiverTransfers: async () => [{ amountAtomic: 500_000n }], inspectTx: async () => ({ assetIds: ['BDX'], isFlash: false, inPool: false, blockHeight: 3 }) },
-      { amountMatch: 'exact' },
-    );
-    expect(daemonWrong.failures).toContain('ASSET_MISMATCH');
+    expect(daemonOnly.failures).toEqual(['ASSET_UNVERIFIABLE']);
     await expect(verifyReceivedPayment({ ...base, amountAtomic: 0n }, {}, { amountMatch: 'exact' })).rejects.toThrow(/positive/);
   });
 });
 
 describe('tx inspection', () => {
-  it('extracts asset tags from vout and normalizes native markers', () => {
-    expect(extractAssetIds({ vout: [{ target: { key: 'k', asset_id: USD.toUpperCase() } }, { target: { asset_type: '' } }] })).toEqual([
-      USD,
-      'BDX',
-    ]);
-    expect(extractAssetIds({ vout: [{ amount: 1, target: { key: 'k' } }] })).toBeNull();
-    // Partial tagging: an untagged native output next to a tagged dust token output proves nothing.
-    expect(extractAssetIds({ vout: [{ target: { key: 'k' } }, { target: { key: 'k2', asset_id: USD } }] })).toBeNull();
-    expect(extractAssetIds({ vout: [] })).toBeNull();
-    expect(extractAssetIds(null)).toBeNull();
-  });
-
-  it('reads daemon entries (as_json) and explorer objects', () => {
+  it('reads pool, flash and height from daemon entries and explorer objects', () => {
     const daemon = inspectionFromDecodedTx({
-      as_json: JSON.stringify({ vout: [{ target: { asset_id: USD } }] }),
+      as_json: JSON.stringify({ vout: [{ target: { zyphora: { blinded_token_id: USD } } }] }),
       in_pool: false,
       flash: true,
       block_height: 50,
     });
-    expect(daemon).toEqual({ assetIds: [USD], isFlash: true, inPool: false, blockHeight: 50 });
+    expect(daemon).toEqual({ isFlash: true, inPool: false, blockHeight: 50 });
     const explorerPool = inspectionFromDecodedTx({ flash: true, block_height: 0, vout: [] });
-    expect(explorerPool).toEqual({ assetIds: null, isFlash: true, inPool: true, blockHeight: null });
+    expect(explorerPool).toEqual({ isFlash: true, inPool: true, blockHeight: null });
     expect(inspectionFromDecodedTx({ as_json: '{broken', block_height: 9 }).blockHeight).toBe(9);
   });
 

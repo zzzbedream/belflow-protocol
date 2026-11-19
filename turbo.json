@@ -27,19 +27,17 @@
     },
     "lint": {},
     "test": {
-      "outputs": []
+      "cache": false
     },
     "test:coverage": {
-      "outputs": [
-        "coverage/**"
-      ]
+      "cache": false
     },
     "dev": {
       "cache": false,
       "persistent": true
     },
     "test:audit": {
-      "outputs": []
+      "cache": false
     }
   }
 }

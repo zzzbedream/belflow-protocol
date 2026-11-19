@@ -1,7 +1,7 @@
 {
   "name": "@belflow/sdk",
   "version": "0.1.0",
-  "description": "Typed Beldex SDK: browser extension, wallet-rpc sidecar and deterministic mock chain providers, BNS, batching and selective audit proofs.",
+  "description": "Typed Beldex SDK: browser extension, wallet-rpc sidecar and deterministic mock chain providers, BNS, batch payments, privacy tokens and tx_key payment proofs.",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
@@ -9,10 +9,6 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
-    },
-    "./node": {
-      "types": "./src/node.ts",
-      "default": "./src/node.ts"
     }
   },
   "publishConfig": {
@@ -26,16 +22,6 @@
           "types": "./dist/index.d.cts",
           "default": "./dist/index.cjs"
         }
-      },
-      "./node": {
-        "import": {
-          "types": "./dist/node.d.ts",
-          "default": "./dist/node.js"
-        },
-        "require": {
-          "types": "./dist/node.d.cts",
-          "default": "./dist/node.cjs"
-        }
       }
     },
     "main": "./dist/index.cjs",
@@ -46,7 +32,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/index.ts src/node.ts --format esm,cjs --dts --clean",
+    "build": "tsup src/index.ts --format esm,cjs --dts --clean",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",

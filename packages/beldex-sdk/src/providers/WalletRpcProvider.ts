@@ -1,6 +1,6 @@
 import { BnsResolver, createRpcBnsBackend } from '../bns/resolver';
 import { createDaemonTxInspector, createExplorerTxInspector } from '../compliance/txInspection';
-import { verifyForProvider, type TxInspection, type VerificationSources } from '../compliance/verifier';
+import { normalizeAssetId, verifyForProvider, type TxInspection, type VerificationSources } from '../compliance/verifier';
 import { BDX_DECIMALS, FLASH_FEE_MULTIPLIER, NATIVE_TOKEN_ID, PRIORITY_FLASH, PRIORITY_NORMAL } from '../constants';
 import {
   FundsLockedError,
@@ -8,11 +8,10 @@ import {
   OutcomeUnknownError,
   RpcError,
   RpcTransportError,
-  UnsupportedCapabilityError,
   ValidationError,
 } from '../errors';
 import type { DaemonRpc } from '../rpc/daemon';
-import { createZarcanumTxKeySource } from '../zarcanum/decode';
+import { createZyphoraTxKeySource } from '../zyphora/decode';
 import { toBigIntAmount } from '../rpc/json';
 import type { TransferDestination, WalletRpc } from '../rpc/wallet';
 import type {
@@ -31,29 +30,14 @@ import { formatUnits, parseUnits } from '../units';
 import { FULL_CAPABILITIES, executeBatch, summarizeBatch } from './batch';
 import type { OutgoingTransfer } from './reconcile';
 
-/** Descriptor consumed by deploy_new_asset (written to a file on the wallet host). */
-export interface AssetDescriptor {
-  ticker: string;
-  full_name: string;
-  total_max_supply: bigint;
-  current_supply: bigint;
-  decimal_point: number;
-  hidden_supply: boolean;
-  meta_info: string;
-}
-
-/** Writes the descriptor where wallet-rpc can read it; the caller must clean up. */
-export type AssetDescriptorWriter = (descriptor: AssetDescriptor) => Promise<{ path: string; cleanup: () => Promise<void> }>;
-
 export interface WalletRpcProviderOptions {
   wallet: WalletRpc;
   daemon?: DaemonRpc;
   network: Exclude<BeldexNetwork, 'mock-devnet'>;
   /** Public explorer API used for tx inspection when no daemon is configured. */
   explorerApiUrl?: string;
-  writeAssetDescriptor?: AssetDescriptorWriter;
-  /** Decimals for assets this wallet did not deploy. */
-  decimalsFor?: (assetId: string) => Promise<number | undefined>;
+  /** Decimals for tokens neither this wallet nor the daemon can describe. */
+  decimalsFor?: (tokenId: string) => Promise<number | undefined>;
   /** Wallet account used for balances, addresses and spends (e.g. a dedicated faucet account). */
   accountIndex?: number;
 }
@@ -75,7 +59,7 @@ function estimatedBurn(feeAtomic: bigint, flash: boolean): bigint {
   return flash ? feeAtomic - feeAtomic / FLASH_FEE_MULTIPLIER : 0n;
 }
 
-/** Enterprise sidecar: beldex-wallet-rpc (feature-confidential-asset build) + optional daemon. */
+/** Enterprise sidecar: beldex-wallet-rpc (feature-privacy-token build) + optional daemon. */
 export class WalletRpcProvider implements IBeldexProvider {
   readonly kind = 'wallet-rpc-sidecar' as const;
   readonly capabilities = FULL_CAPABILITIES;
@@ -132,7 +116,8 @@ export class WalletRpcProvider implements IBeldexProvider {
       destinations: (entry.destinations ?? []).map((destination) => ({
         address: destination.address,
         amountAtomic: toBigIntAmount(destination.amount),
-        ...(destination.asset_id !== undefined ? { assetId: destination.asset_id || NATIVE_TOKEN_ID } : entry.asset_id !== undefined ? { assetId: entry.asset_id || NATIVE_TOKEN_ID } : {}),
+        // token_id is omitted or empty for BDX (KV_SERIALIZE_OPT in transfer_destination.h).
+        assetId: destination.token_id || entry.token_id || NATIVE_TOKEN_ID,
       })),
     }));
   }
@@ -151,9 +136,9 @@ export class WalletRpcProvider implements IBeldexProvider {
     const result: Record<string, string> = {
       [NATIVE_TOKEN_ID]: formatUnits(toBigIntAmount(balance.balance), BDX_DECIMALS),
     };
-    for (const entry of balance.asset_balances ?? []) {
-      const decimals = await this.decimals(entry.asset_id);
-      result[entry.asset_id] = formatUnits(toBigIntAmount(entry.balance), decimals);
+    for (const entry of balance.token_balances ?? []) {
+      const decimals = await this.decimals(entry.token_id);
+      result[entry.token_id] = formatUnits(toBigIntAmount(entry.balance), decimals);
     }
     return result;
   }
@@ -163,46 +148,49 @@ export class WalletRpcProvider implements IBeldexProvider {
     return this.bns.resolve(domain);
   }
 
+  /**
+   * register_privacy_token with an inline descriptor (json_string): no file is
+   * shared with the wallet host. The whole supply is issued at registration.
+   * Registration cannot use flash priority, because its burn is fixed by
+   * consensus (wallet2::create_privacy_token_registration_tx).
+   */
   async mintPrivacyToken(params: Omit<PrivacyTokenMetadata, 'tokenId' | 'isNativeBdx'>): Promise<PrivacyTokenMetadata> {
-    if (!this.options.writeAssetDescriptor) throw new UnsupportedCapabilityError('assets', this.kind);
     const supply = parseUnits(params.totalSupply ?? '0', params.decimals);
-    const { path, cleanup } = await this.options.writeAssetDescriptor({
-      ticker: params.ticker,
-      full_name: params.name,
-      total_max_supply: supply,
-      current_supply: supply,
-      decimal_point: params.decimals,
-      hidden_supply: false,
-      meta_info: '',
-    });
+    if (supply <= 0n) throw new ValidationError('A privacy token needs a positive total supply.');
+    let registered;
     try {
-      const deployed = await this.wallet.deployNewAsset(path, PRIORITY_NORMAL);
-      this.decimalsCache.set(deployed.asset_id, params.decimals);
-      return {
-        tokenId: deployed.asset_id,
-        ticker: deployed.ticker ?? params.ticker,
-        name: deployed.full_name ?? params.name,
-        decimals: params.decimals,
-        totalSupply: formatUnits(supply, params.decimals),
-        isNativeBdx: false,
-        deployTxHash: deployed.tx_hash,
-        deployFeeAtomic: toBigIntAmount(deployed.tx_fee).toString(),
-      };
-    } finally {
-      await cleanup();
+      registered = await this.wallet.registerPrivacyToken(
+        { ticker: params.ticker, full_name: params.name, total_max_supply: supply, current_supply: supply, decimal_point: params.decimals, meta_info: '' },
+        PRIORITY_NORMAL,
+        this.account,
+      );
+    } catch (error) {
+      throw translateTransferError(error, NATIVE_TOKEN_ID, 'register_privacy_token');
     }
+    this.decimalsCache.set(normalizeAssetId(registered.token_id), params.decimals);
+    await this.flush();
+    return {
+      tokenId: registered.token_id,
+      ticker: registered.ticker || params.ticker,
+      name: registered.full_name || params.name,
+      decimals: params.decimals,
+      totalSupply: formatUnits(supply, params.decimals),
+      isNativeBdx: false,
+      deployTxHash: registered.tx_hash,
+      deployFeeAtomic: toBigIntAmount(registered.tx_fee).toString(),
+    };
   }
 
   async sendBatchChunk(recipients: BatchPaymentRecipient[], useFlashTx: boolean): Promise<ConfidentialTxPart[]> {
     const tokenId = recipients[0]?.tokenId ?? NATIVE_TOKEN_ID;
     if (recipients.some((recipient) => recipient.tokenId !== tokenId)) {
-      throw new ValidationError('A chunk must contain a single asset.');
+      throw new ValidationError('A chunk must contain a single token.');
     }
     const decimals = await this.decimals(tokenId);
     const destinations: TransferDestination[] = recipients.map((recipient) => ({
       address: recipient.resolvedAddress,
       amount: parseUnits(recipient.amount, decimals),
-      ...(tokenId === NATIVE_TOKEN_ID ? {} : { asset_id: tokenId }),
+      ...(tokenId === NATIVE_TOKEN_ID ? {} : { token_id: tokenId }),
     }));
     const priority = useFlashTx ? PRIORITY_FLASH : PRIORITY_NORMAL;
     const ids = recipients.map((recipient) => recipient.id);
@@ -224,7 +212,10 @@ export class WalletRpcProvider implements IBeldexProvider {
     }
     await this.flush();
     // Broadcast already happened: from here on nothing may throw and lose the tx hashes.
-    const parts = split.tx_hash_list.map((txHash, index) =>
+    const hashes = Array.isArray(split.tx_hash_list) ? split.tx_hash_list : [];
+    // A success without hashes cannot be attributed: the chunk becomes UNKNOWN and is never resent.
+    if (hashes.length === 0) throw new OutcomeUnknownError('transfer_split');
+    const parts = hashes.map((txHash, index) =>
       this.part(txHash, split.tx_key_list?.[index] ?? '', toBigIntAmount(split.fee_list?.[index]), [], useFlashTx),
     );
     return this.attributeSplit(parts, recipients, destinations);
@@ -255,7 +246,10 @@ export class WalletRpcProvider implements IBeldexProvider {
           inPool: check.in_pool,
           confirmations,
           blockHeight: height === null ? null : height - confirmations,
-          ...(check.asset_id !== undefined ? { assetId: check.asset_id || NATIVE_TOKEN_ID } : {}),
+          // Absent on wallet-rpc builds without privacy tokens: then BDX has no token attribution.
+          ...(check.token_received !== undefined
+            ? { tokenReceived: check.token_received.map((entry) => ({ tokenId: entry.token_id, amountAtomic: toBigIntAmount(entry.amount) })) }
+            : {}),
         };
       },
       receiverTransfers: async (txHash, address) => {
@@ -265,13 +259,14 @@ export class WalletRpcProvider implements IBeldexProvider {
           .filter((entry) => entry.type === 'in' || entry.type === 'pool' || entry.type === undefined)
           .filter((entry) => entry.address === undefined || entry.address === address)
           .map((entry) => ({
-            ...(entry.asset_id !== undefined ? { assetId: entry.asset_id || NATIVE_TOKEN_ID } : {}),
+            // transfer_view.token_id: omitted or empty for BDX.
+            assetId: entry.token_id || NATIVE_TOKEN_ID,
             amountAtomic: toBigIntAmount(entry.amount),
           }));
       },
       ...(this.inspect ? { inspectTx: this.inspect } : {}),
-      // Token payments: decode tx_out_zarcanum outputs with the tx_key (needs the raw tx from a daemon).
-      ...(this.daemon ? { zarcanumTxKey: createZarcanumTxKeySource(this.daemon) } : {}),
+      // Independent token check: decode tx_out_zyphora outputs with the tx_key (needs the raw tx from a daemon).
+      ...(this.daemon ? { zyphoraTxKey: createZyphoraTxKeySource(this.daemon) } : {}),
       verifySignature: async (message, address, signature) => (await this.wallet.verify(message, address, signature)).good,
     };
   }
@@ -303,9 +298,12 @@ export class WalletRpcProvider implements IBeldexProvider {
 
   /**
    * transfer_split does not say which destination landed in which tx. Each
-   * part's received amount per address is read with check_tx_key and
-   * recipients are matched by remaining amount. Never throws: anything that
-   * cannot be matched marks the parts for manual reconciliation.
+   * part's received amount per address is read with check_tx_key (`received`
+   * for BDX, `token_received` for a token). The mapping is certain only when
+   * every address received in exactly one part, exactly the amount sent to
+   * it. Anything else (missing tx keys, an address paid in several parts, a
+   * different amount) still gets a best-effort mapping but marks the parts
+   * for manual reconciliation. Never throws: broadcast already happened.
    */
   private async attributeSplit(
     parts: ConfidentialTxPart[],
@@ -313,28 +311,47 @@ export class WalletRpcProvider implements IBeldexProvider {
     destinations: TransferDestination[],
   ): Promise<ConfidentialTxPart[]> {
     if (parts.length === 1 && parts[0]) return [{ ...parts[0], recipientIds: recipients.map((r) => r.id) }];
+    const tokenId = destinations[0]?.token_id?.toLowerCase();
     const assigned = new Map<string, string[]>(parts.map((part) => [part.txHash, []]));
     let complete = true;
     try {
-      const remaining = new Map<string, bigint>();
+      const received = new Map<string, bigint>();
+      const addresses = [...new Set(destinations.map((d) => d.address))];
       for (const part of parts) {
-        for (const address of new Set(destinations.map((d) => d.address))) {
-          if (!part.txKey) continue;
+        if (!part.txKey) {
+          complete = false;
+          continue;
+        }
+        for (const address of addresses) {
           const check = await this.wallet.checkTxKey(part.txHash, part.txKey, address);
-          remaining.set(`${part.txHash}:${address}`, toBigIntAmount(check.received));
+          const amount = tokenId
+            ? (check.token_received ?? [])
+                .filter((entry) => entry.token_id.toLowerCase() === tokenId)
+                .reduce((sum, entry) => sum + toBigIntAmount(entry.amount), 0n)
+            : toBigIntAmount(check.received);
+          received.set(`${part.txHash}:${address}`, amount);
         }
       }
-      recipients.forEach((recipient, index) => {
-        const amount = destinations[index]?.amount ?? 0n;
-        const part = parts.find((p) => (remaining.get(`${p.txHash}:${recipient.resolvedAddress}`) ?? 0n) >= amount);
-        if (!part) {
-          complete = false;
-          return;
+      for (const address of addresses) {
+        const indexes = destinations.flatMap((destination, index) => (destination.address === address ? [index] : []));
+        const sent = indexes.reduce((sum, index) => sum + (destinations[index]?.amount ?? 0n), 0n);
+        const holders = parts.filter((part) => (received.get(`${part.txHash}:${address}`) ?? 0n) > 0n);
+        const single = holders.length === 1 ? holders[0] : undefined;
+        if (!single || received.get(`${single.txHash}:${address}`) !== sent) complete = false;
+        // Best effort: give each recipient the first part that still covers its amount.
+        const remaining = new Map(holders.map((part) => [part.txHash, received.get(`${part.txHash}:${address}`) ?? 0n]));
+        for (const index of indexes) {
+          const amount = destinations[index]?.amount ?? 0n;
+          const part = holders.find((candidate) => (remaining.get(candidate.txHash) ?? 0n) >= amount);
+          const recipient = recipients[index];
+          if (!part || !recipient) {
+            complete = false;
+            continue;
+          }
+          remaining.set(part.txHash, (remaining.get(part.txHash) ?? 0n) - amount);
+          assigned.get(part.txHash)?.push(recipient.id);
         }
-        const key = `${part.txHash}:${recipient.resolvedAddress}`;
-        remaining.set(key, (remaining.get(key) ?? 0n) - amount);
-        assigned.get(part.txHash)?.push(recipient.id);
-      });
+      }
     } catch {
       complete = false;
     }
@@ -353,15 +370,22 @@ export class WalletRpcProvider implements IBeldexProvider {
     }
   }
 
-  private async decimals(tokenId: string): Promise<number> {
+  private async decimals(rawTokenId: string): Promise<number> {
+    // "BDX" stays as is; hex token ids are cached lowercase.
+    const tokenId = normalizeAssetId(rawTokenId);
     const cached = this.decimalsCache.get(tokenId);
     if (cached !== undefined) return cached;
-    const owned = await this.wallet.getOwnedAssets().catch(() => ({ assets: [] }));
-    for (const asset of owned.assets ?? []) {
-      if (asset.decimal_point !== undefined) this.decimalsCache.set(asset.asset_id, asset.decimal_point);
+    const owned = await this.wallet.getOwnedTokens().catch(() => ({ tokens: [] }));
+    for (const token of owned.tokens ?? []) {
+      if (token.decimal_point !== undefined) this.decimalsCache.set(normalizeAssetId(token.token_id), token.decimal_point);
     }
-    const decimals = this.decimalsCache.get(tokenId) ?? (await this.options.decimalsFor?.(tokenId));
-    if (decimals === undefined) throw new ValidationError(`Unknown decimals for asset ${tokenId}.`);
+    // Tokens this wallet did not register: the daemon's public get_token_info.
+    const fromDaemon =
+      this.decimalsCache.has(tokenId) || !this.daemon
+        ? undefined
+        : await this.daemon.getTokenInfo(tokenId).then((info) => info.decimal_point, () => undefined);
+    const decimals = this.decimalsCache.get(tokenId) ?? fromDaemon ?? (await this.options.decimalsFor?.(tokenId));
+    if (decimals === undefined) throw new ValidationError(`Unknown decimals for token ${tokenId}.`);
     this.decimalsCache.set(tokenId, decimals);
     return decimals;
   }

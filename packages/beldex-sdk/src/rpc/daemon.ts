@@ -32,6 +32,19 @@ export interface FeeEstimate {
   flash_fee_fixed?: number | string;
 }
 
+/** get_token_info: current state of a registered privacy token. */
+export interface DaemonTokenInfo {
+  token_id?: string;
+  ticker: string;
+  full_name: string;
+  owner?: string;
+  current_supply: number | string;
+  total_max_supply: number | string;
+  decimal_point: number;
+  operation_count?: number;
+  meta_info?: string;
+}
+
 const METHOD_NOT_FOUND = -32601;
 
 /** Read-only daemon (beldexd) RPC used for BNS, tx inspection and network info. */
@@ -49,6 +62,16 @@ export class DaemonRpc {
 
   getFeeEstimate(): Promise<FeeEstimate> {
     return this.client.call<FeeEstimate>(DAEMON_METHODS.getFeeEstimate);
+  }
+
+  /** Ticker, decimals and supply of a registered privacy token (public RPC). */
+  getTokenInfo(tokenId: string): Promise<DaemonTokenInfo> {
+    return this.client.call<DaemonTokenInfo>(DAEMON_METHODS.getTokenInfo, { token_id: tokenId });
+  }
+
+  /** Registered token ids, paginated. */
+  getTokenList(offset = 0, count = 100): Promise<{ token_ids?: string[] }> {
+    return this.client.call(DAEMON_METHODS.getTokenList, { offset, count });
   }
 
   /**

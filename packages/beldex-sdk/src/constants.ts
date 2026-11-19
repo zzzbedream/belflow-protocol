@@ -1,5 +1,6 @@
 // Protocol constants. Values marked "verify" were read from the
-// Beldex-Coin/beldex feature-confidential-asset branch (cryptonote_config.h)
+// Beldex-Coin/beldex feature-privacy-token branch at 4d89104 (cryptonote_config.h,
+// hardfork.cpp)
 // or from the public testnet explorer in October 2026 and can change before
 // mainnet. Keep them in one place so a fork upgrade is a one-file change.
 

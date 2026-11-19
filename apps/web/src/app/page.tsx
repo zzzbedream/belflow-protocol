@@ -9,7 +9,7 @@ const QA_REPORT = `${REPO}/blob/main/docs/QA_AND_SECURITY_AUDIT_REPORT.md`;
 // Every figure here comes from the repository: test counts from the QA report,
 // vectors from packages/beldex-sdk/test/fixtures. Testnet stays "pending".
 const EVIDENCE = [
-  { value: '178', label: 'unit and integration tests', href: QA_REPORT },
+  { value: '192', label: 'unit and integration tests', href: QA_REPORT },
   { value: '31', label: 'adversarial audit tests (AUD-01 to 05)', href: QA_REPORT },
   { value: '9/9', label: 'end-to-end flows on a production build', href: QA_REPORT },
   { value: '200', label: 'Monero crypto test vectors for the ported primitives', href: `${REPO}/tree/main/packages/beldex-sdk/test` },
@@ -17,8 +17,8 @@ const EVIDENCE = [
 
 const STATUS = [
   { label: 'SDK, verifier, x402 rails, demo app', state: 'Built and tested', tone: 'text-verified' },
-  { label: 'zarcanum tx_key decoder', state: 'Tested on vectors · live check pending', tone: 'text-flash' },
-  { label: 'Wallet-rpc flows on the Proto testnet', state: 'Pending a funded wallet-rpc', tone: 'text-flash' },
+  { label: 'Wallet-free zyphora tx_key decoder', state: 'Round-trip tests · live check pending', tone: 'text-flash' },
+  { label: 'Wallet-rpc flows on feature-privacy-token', state: 'Ported · live testnet run pending', tone: 'text-flash' },
 ];
 
 export default function LandingPage() {
@@ -47,7 +47,7 @@ export default function LandingPage() {
               Prove one token payment. Reveal nothing else.
             </h1>
             <p className="mt-5 max-w-2xl text-lg leading-relaxed text-paper/75">
-              BelFlow is a TypeScript SDK and verifier for Beldex Confidential Assets. It connects the browser wallet to <code className="figures text-base">beldex-wallet-rpc</code>, sends multi-output batches, and lets an auditor check a single payment from its <code className="figures text-base">tx_key</code>.
+              BelFlow is a TypeScript SDK and verifier for Beldex Privacy Tokens. It connects the browser wallet to <code className="figures text-base">beldex-wallet-rpc</code>, sends multi-output batches, and lets an auditor check a single payment from its <code className="figures text-base">tx_key</code>.
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
               <Link href="/treasury" className="group flex items-center gap-2 rounded-[10px] bg-vault px-5 py-3 font-medium text-paper hover:brightness-110" data-testid="launch-app">
@@ -67,12 +67,12 @@ export default function LandingPage() {
       </section>
 
       <section className="mx-auto max-w-6xl px-4 py-16 sm:px-6" aria-labelledby="proof-heading">
-        <p className="figures text-[0.7rem] uppercase tracking-[0.24em] text-vault">The gap we fill</p>
+        <p className="figures text-[0.7rem] uppercase tracking-[0.24em] text-vault">How it works</p>
         <h2 id="proof-heading" className="mt-3 max-w-3xl text-3xl font-semibold tracking-[-0.03em] sm:text-4xl">
           Proving a Privacy Token payment from its tx_key
         </h2>
         <p className="mt-3 max-w-3xl text-ink-2">
-          On the <code className="figures text-sm">feature-confidential-asset</code> branch, tokens are paid as <code className="figures text-sm">tx_out_zarcanum</code> outputs. Beldex’s <code className="figures text-sm">check_tx_key</code> does not read them yet. BelFlow decodes them with the same key derivation the wallet uses.
+          On Beldex’s <code className="figures text-sm">feature-privacy-token</code> branch, tokens are paid as <code className="figures text-sm">tx_out_zyphora</code> outputs and <code className="figures text-sm">check_tx_key</code> reports them in <code className="figures text-sm">token_received</code>. BelFlow turns that into a receipt an auditor can check, and can run the same decode without a wallet.
         </p>
         <div className="mt-10">
           <ProofSequence />

@@ -13,10 +13,10 @@ export interface MockBalanceDto {
 
 export interface MockTxKeyCheckDto {
   receivedAtomic: string;
+  tokenReceived: Array<{ tokenId: string; amountAtomic: string }>;
   inPool: boolean;
   confirmations: number;
   blockHeight: number | null;
-  assetId?: string;
 }
 
 export interface MockTxViewDto extends Omit<MockTxView, 'feeAtomic' | 'burnedAtomic'> {
@@ -113,7 +113,11 @@ export class LocalMockChainApi implements MockChainApi {
 
   async checkTxKey(txHash: string, txKey: string, address: string) {
     const check = this.chain.checkTxKey(txHash, txKey, address);
-    return { ...check, receivedAtomic: check.receivedAtomic.toString() };
+    return {
+      ...check,
+      receivedAtomic: check.receivedAtomic.toString(),
+      tokenReceived: (check.tokenReceived ?? []).map((entry) => ({ tokenId: entry.tokenId, amountAtomic: entry.amountAtomic.toString() })),
+    };
   }
 
   async getTransaction(txHash: string) {

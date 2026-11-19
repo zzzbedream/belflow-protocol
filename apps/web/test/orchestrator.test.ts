@@ -4,19 +4,17 @@ import path from 'node:path';
 import { DaemonRpc, JsonRpcClient, WalletRpc } from '@belflow/sdk';
 import { describe, expect, it } from 'vitest';
 import { createBeldexEmulator } from '../scripts/testnet/emulator';
-import { checkBelflowDecoder, EXPLORER_TX_URL, runOrchestrator, type OrchestratorDeps } from '../scripts/testnet/orchestrator';
+import { AUD04_DECOY_TOKEN_ID, checkBelflowDecoder, EXPLORER_TX_URL, runOrchestrator, tokenAmount, type OrchestratorDeps } from '../scripts/testnet/orchestrator';
 
-async function setup(options: { fundAtomic?: bigint; daemonAssetTags?: boolean; checkTxKeyIgnoresAssets?: boolean } = {}) {
-  const emulator = createBeldexEmulator({
-    fundAtomic: options.fundAtomic ?? 100_000_000_000n,
-    daemonAssetTags: options.daemonAssetTags ?? false,
-    checkTxKeyIgnoresAssets: options.checkTxKeyIgnoresAssets ?? false,
-  });
+/** Enough for one testnet token registration (200 BDX) plus the other steps. */
+const FUNDED = 300_000_000_000n;
+
+async function setup(options: { fundAtomic?: bigint } = {}) {
+  const emulator = createBeldexEmulator({ fundAtomic: options.fundAtomic ?? FUNDED });
   const lines: string[] = [];
   const deps: OrchestratorDeps = {
     wallet: new WalletRpc(new JsonRpcClient({ url: 'http://emu/wallet', fetch: emulator.walletFetch })),
     daemon: new DaemonRpc(new JsonRpcClient({ url: 'http://emu/daemon', fetch: emulator.daemonFetch })),
-    descriptorDir: await mkdtemp(path.join(tmpdir(), 'belflow-desc-')),
     artifactsDir: await mkdtemp(path.join(tmpdir(), 'belflow-art-')),
     faucetAccountIndex: 1,
     log: (line) => lines.push(line),
@@ -29,47 +27,44 @@ async function setup(options: { fundAtomic?: bigint; daemonAssetTags?: boolean; 
 }
 
 describe('checkBelflowDecoder', () => {
-  it('reports no-daemon and no-zarcanum-outputs without throwing', () => {
+  it('reports no-daemon and no-zyphora-outputs without throwing', () => {
     expect(checkBelflowDecoder(undefined, 'a'.repeat(64), [], 'b'.repeat(64))).toEqual({ status: 'no-daemon' });
-    expect(checkBelflowDecoder({ as_json: '{"vout":[{"amount":0,"target":{"key":"aa"}}]}' }, 'a'.repeat(64), [], 'b'.repeat(64))).toEqual({ status: 'no-zarcanum-outputs' });
+    expect(checkBelflowDecoder({ as_json: '{"vout":[{"amount":0,"target":{"key":"aa"}}]}' }, 'a'.repeat(64), [], 'b'.repeat(64))).toEqual({ status: 'no-zyphora-outputs' });
+  });
+
+  it('sums token_received for one token id, ignoring case and other tokens', () => {
+    const check = { token_received: [{ token_id: 'AB'.repeat(32), amount: 5 }, { token_id: 'ab'.repeat(32), amount: '7' }, { token_id: 'cd'.repeat(32), amount: 9 }] };
+    expect(tokenAmount(check, 'ab'.repeat(32))).toBe(12n);
+    expect(tokenAmount({}, 'ab'.repeat(32))).toBe(0n);
   });
 });
 
 describe('testnet orchestrator (against the wallet-rpc/daemon emulator)', () => {
-  it('runs every step, records explorer links and rejects the live asset-confusion attempt', async () => {
+  it('runs every step, records explorer links and rejects the live token-confusion attempt', async () => {
     const { deps, lines } = await setup();
     const result = await runOrchestrator(deps);
     expect(result.exitCode).toBe(0);
     const { state } = result;
     expect(state.preflight?.nettype).toBe('testnet');
     expect(state.presplit).toMatchObject({ outputs: 10, faucetAccount: 1 });
-    expect(Object.keys(state.assets).sort()).toEqual(['bAUDIT', 'bUSD']);
-    expect(state.forensic?.checkTxKey.map((c) => c.receivedAtomic)).toEqual(['1000000', '2000000', '3000000']);
-    expect(state.forensic?.extractorRecognizedAssetTags).toBe(false);
-    expect(state.forensic?.zarcanumIgnoredByCheckTxKey).toBe(false);
-    // The emulator's decoded txs carry no tx_out_zarcanum outputs; the real run fills this in.
-    expect(state.forensic?.belflowDecoder).toEqual({ status: 'no-zarcanum-outputs' });
-    expect(state.aud04).toMatchObject({ rejected: true, checkTxKeyReceivedAtomic: '100000000', diagnosis: 'ASSET_MISMATCH_DETECTED' });
+    expect(Object.keys(state.tokens)).toEqual(['bUSD']);
+    expect(state.forensic?.checkTxKey.map((c) => c.tokenReceivedAtomic)).toEqual(['1000000', '2000000', '3000000']);
+    expect(state.forensic?.checkTxKey.every((c) => c.nativeReceivedAtomic === '0')).toBe(true);
+    expect(state.forensic?.checkTxKeyMatchesSent).toBe(true);
+    // The emulator's decoded txs carry no real tx_out_zyphora outputs; the live run fills this in.
+    expect(state.forensic?.belflowDecoder).toEqual({ status: 'no-zyphora-outputs' });
+    expect(state.aud04).toMatchObject({ rejected: true, claimedToken: AUD04_DECOY_TOKEN_ID, diagnosis: 'ASSET_MISMATCH_DETECTED' });
+    expect(state.aud04?.tokenReceived).toEqual([{ tokenId: state.tokens.bUSD?.tokenId, amountAtomic: '100000000' }]);
     expect(state.aud04?.failures).toContain('ASSET_MISMATCH');
     expect(state.x402).toMatchObject({ status: 200, settledFromMempool: true });
-    for (const key of ['deploy_bUSD', 'deploy_bAUDIT', 'transfer_split', 'flash_payment', 'aud04_attack', 'x402_flash']) {
+    for (const key of ['register_bUSD', 'transfer_split', 'flash_payment', 'aud04_attack', 'x402_flash']) {
       expect(state.links[key]).toMatch(new RegExp(`^${EXPLORER_TX_URL}[0-9a-f]{64}$`));
     }
-    const sample = JSON.parse(await readFile(path.join(deps.artifactsDir, 'proto-tx-structure.json'), 'utf8')) as { daemon_get_transactions: { as_json: string } };
-    expect(sample.daemon_get_transactions.as_json).toContain('vout');
+    const sample = JSON.parse(await readFile(path.join(deps.artifactsDir, 'proto-tx-structure.json'), 'utf8')) as { txHashes: string[]; daemon_get_transactions: Array<{ as_json: string }> };
+    expect(sample.txHashes).toEqual(state.forensic?.splitTxHashes);
+    expect(sample.daemon_get_transactions[0]?.as_json).toContain('vout');
+    expect(lines.join('\n')).toMatch(/check_tx_key token_received vs\. sent amounts: matched/);
     expect(lines.join('\n')).toMatch(/AUD-04 live: .* rejected/);
-  });
-
-  it('records outcome B without aborting when check_tx_key ignores Confidential Asset outputs', async () => {
-    const { deps, lines } = await setup({ checkTxKeyIgnoresAssets: true });
-    const result = await runOrchestrator(deps);
-    expect(result.exitCode).toBe(0);
-    const { state } = result;
-    expect(state.forensic?.checkTxKey.map((c) => c.receivedAtomic)).toEqual(['0', '0', '0']);
-    expect(state.forensic?.zarcanumIgnoredByCheckTxKey).toBe(true);
-    expect(state.aud04).toMatchObject({ rejected: true, checkTxKeyReceivedAtomic: '0', diagnosis: 'ZARCANUM_ZERO_RECEIVED_IN_CHECK_TX_KEY' });
-    expect(state.x402).toMatchObject({ status: 200 });
-    expect(lines.join('\n')).toMatch(/check_tx_key returned 0 for every Confidential Asset output/);
   });
 
   it('is idempotent: a rerun sends nothing new', async () => {
@@ -81,18 +76,30 @@ describe('testnet orchestrator (against the wallet-rpc/daemon emulator)', () => 
     expect(Object.keys(emulator.chain.snapshot().txs)).toHaveLength(txCount);
   });
 
-  it('exits with code 2 and the faucet address when the treasury is unfunded', async () => {
-    const { deps } = await setup({ fundAtomic: 0n });
+  it('resumes after a timeout without re-registering the token or resending broadcast payments', async () => {
+    const { emulator, deps } = await setup();
+    // No blocks are mined, so the first wait for locked change times out (exit 3).
+    const stalled = await runOrchestrator({ ...deps, sleep: async () => {}, unlockTimeoutMs: 0 });
+    expect(stalled.exitCode).toBe(3);
+    const firstState = JSON.parse(await readFile(path.join(deps.artifactsDir, 'testnet-deployments.json'), 'utf8')) as { presplit?: unknown; tokens: Record<string, unknown> };
+    expect(firstState.presplit).toBeDefined();
+    const sentBefore = Object.keys(emulator.chain.snapshot().txs).length;
+    // Rerun with block production: every recorded broadcast is reused, nothing is sent twice.
+    const resumed = await runOrchestrator(deps);
+    expect(resumed.exitCode).toBe(0);
+    expect(emulator.chain.listAssets()).toHaveLength(1);
+    expect(resumed.state.presplit?.txHashes[0]).toBe((firstState.presplit as { txHashes: string[] }).txHashes[0]);
+    expect(Object.keys(emulator.chain.snapshot().txs).length).toBeGreaterThan(sentBefore);
+    expect(resumed.state.pending).toEqual({ faucetTxHash: expect.any(String) });
+  });
+
+  it('exits with code 2 and the address to fund when the treasury cannot cover a token registration', async () => {
+    const { deps } = await setup({ fundAtomic: 100_000_000_000n });
     const result = await runOrchestrator(deps);
     expect(result.exitCode).toBe(2);
     expect(result.message).toContain(result.state.preflight?.address as string);
+    expect(result.message).toMatch(/250 testnet BDX/);
     expect(result.state.presplit).toBeUndefined();
-  });
-
-  it('reports DAEMON_EXTRACTED as possible when the daemon exposes per-output asset tags', async () => {
-    const { deps } = await setup({ daemonAssetTags: true });
-    const result = await runOrchestrator(deps);
-    expect(result.state.forensic?.extractorRecognizedAssetTags).toBe(true);
   });
 
   it('refuses to run against a non-testnet daemon', async () => {

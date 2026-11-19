@@ -64,31 +64,34 @@ describe('QA report', () => {
     const report = renderReport(base());
     expect(report).toContain('**Pending.**');
     expect(report).toContain('None of it is on-chain evidence.');
-    expect(report).toContain('no user transactions observed since block 4,242,200');
+    expect(report).toContain('`feature-privacy-token` at `4d89104`');
+    expect(report).toContain('token ids are blinded per output');
+    expect(report).not.toMatch(/zarcanum|feature-confidential-asset|DAEMON_EXTRACTED/);
     expect(report).not.toMatch(/first (ever|in history)/i);
     expect(report).not.toContain('view key');
   });
 
-  it('renders recorded testnet evidence with explorer links and flags an accepted wrong-asset payment', () => {
+  it('renders recorded testnet evidence with explorer links and flags an accepted wrong-token payment', () => {
     const hash = 'a'.repeat(64);
     const report = renderReport(
       base({
         testnet: {
           updatedAt: '2026-10-16T09:00:00.000Z',
           preflight: { height: 4_290_000, nettype: 'testnet' },
-          assets: { busd: { ticker: 'bUSD', assetId: 'b'.repeat(64), deployTxHash: hash } },
-          forensic: { splitTxHashes: [hash], flashTxHash: hash, extractorRecognizedAssetTags: false, zarcanumIgnoredByCheckTxKey: true, belflowDecoder: { status: 'matched' } },
-          aud04: { txHash: hash, claimedAsset: 'b'.repeat(64), paidAsset: 'c'.repeat(64), rejected: false, failures: [], level: null, checkTxKeyReceivedAtomic: '0', diagnosis: 'ACCEPTED' },
-          links: { deploy_busd: `https://testnet.beldex.dev/tx/${hash}` },
+          tokens: { bUSD: { ticker: 'bUSD', tokenId: 'b'.repeat(64), registerTxHash: hash } },
+          forensic: { splitTxHashes: [hash], flashTxHash: hash, checkTxKeyMatchesSent: true, belflowDecoder: { status: 'matched' } },
+          aud04: { txHash: hash, claimedToken: 'd'.repeat(64), paidToken: 'b'.repeat(64), rejected: false, failures: [], level: null, diagnosis: 'ACCEPTED' },
+          links: { register_bUSD: `https://testnet.beldex.dev/tx/${hash}` },
         },
       }),
     );
     expect(report).toContain('testnet at height 4,290,000');
     expect(report).toContain(`(https://testnet.beldex.dev/tx/${hash})`);
-    expect(report).toContain('**ACCEPTED: BelFlow did not catch the wrong asset. Investigate before citing this run.**');
+    expect(report).toContain('**ACCEPTED: BelFlow did not catch the wrong token. Investigate before citing this run.**');
     expect(report).not.toContain('**Pending.**');
-    expect(report).toContain('| check_tx_key on Confidential Asset outputs | returned 0: `tx_out_zarcanum` outputs not counted |');
-    expect(report).toContain('| AUD-04 diagnosis | `ACCEPTED` (check_tx_key received 0) |');
-    expect(report).toContain('| BelFlow tx_key decoder (zarcanum) | **matched every sent amount and asset** | – |');
+    expect(report).toContain('| Register bUSD | token_id `bbbbbbbbbbbbbbbb…` |');
+    expect(report).toContain('| check_tx_key token_received | **matched every sent amount and token** | – |');
+    expect(report).toContain('| AUD-04 diagnosis | `ACCEPTED` | – |');
+    expect(report).toContain('| BelFlow wallet-free decoder (zyphora) | **matched every sent amount and token** | – |');
   });
 });

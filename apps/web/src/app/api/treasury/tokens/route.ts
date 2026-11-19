@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic';
 
 const bodySchema = z.object({ network: networkSchema, token: tokenDeploySchema }).strict();
 
-/** Deploys a Privacy Token (Confidential Asset) from the treasury wallet. */
+/** Registers a privacy token (register_privacy_token) from the treasury wallet. */
 export const POST = route(async (request: Request) => {
   assertSameOrigin(request);
   rateLimit(request, 'treasury:tokens', 10);

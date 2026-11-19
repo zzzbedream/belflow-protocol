@@ -197,19 +197,12 @@ describe('BnsResolver', () => {
 function walletProvider(handlers: Record<string, RpcHandler>, daemonHandlers?: Record<string, RpcHandler>, calls: string[] = []) {
   const wallet = new WalletRpc(new JsonRpcClient({ url: 'http://w', fetch: rpcFetch(handlers, calls) }));
   const daemon = daemonHandlers ? new DaemonRpc(new JsonRpcClient({ url: 'http://d', fetch: rpcFetch(daemonHandlers) })) : undefined;
-  const cleaned: string[] = [];
   const provider = new WalletRpcProvider({
     wallet,
     ...(daemon ? { daemon } : {}),
     network: 'testnet',
-    writeAssetDescriptor: async (descriptor) => ({
-      path: `/assets/${descriptor.ticker}.json`,
-      cleanup: async () => {
-        cleaned.push(descriptor.ticker);
-      },
-    }),
   });
-  return { provider, cleaned, calls };
+  return { provider, calls };
 }
 
 describe('WalletRpcProvider', () => {
@@ -218,40 +211,51 @@ describe('WalletRpcProvider', () => {
   it('reports balances including privacy tokens', async () => {
     const { provider } = walletProvider({
       get_address: () => ({ address: ALICE }),
-      get_balance: () => ({ balance: 2_500_000_000, unlocked_balance: 1, asset_balances: [{ asset_id: ASSET, balance: 1_500_000, unlocked_balance: 0 }] }),
-      get_owned_assets: () => ({ assets: [{ asset_id: ASSET, full_name: 'USD', ticker: 'bUSD', decimal_point: 6 }] }),
+      get_balance: () => ({ balance: 2_500_000_000, unlocked_balance: 1, token_balances: [{ token_id: ASSET, ticker: 'bUSD', balance: 1_500_000, unlocked_balance: 0 }] }),
+      get_owned_tokens: () => ({ tokens: [{ token_id: ASSET, full_name: 'USD', ticker: 'bUSD', decimal_point: 6 }] }),
     });
     await expect(provider.connectWallet()).resolves.toEqual({ address: ALICE, network: 'testnet' });
     await expect(provider.getBalances()).resolves.toEqual({ BDX: '2.5', [ASSET]: '1.5' });
   });
 
-  it('deploys assets through a descriptor file and always cleans up', async () => {
-    const { provider, cleaned } = walletProvider({
-      deploy_new_asset: (p) => {
-        expect(p).toMatchObject({ json_filename: '/assets/bUSD.json', get_tx_key: true });
-        return { asset_id: ASSET, tx_hash: HASH_A, ticker: 'bUSD', full_name: 'USD' };
+  it('registers privacy tokens with an inline descriptor (register_privacy_token json_string)', async () => {
+    const { provider } = walletProvider({
+      register_privacy_token: (p) => {
+        expect(p).toMatchObject({ priority: 1, get_tx_key: true, account_index: 0 });
+        expect(p.json_filename).toBeUndefined();
+        expect(JSON.parse(p.json_string as string)).toEqual({
+          version: 1,
+          ticker: 'bUSD',
+          full_name: 'USD',
+          total_max_supply: 10_000_000,
+          current_supply: 10_000_000,
+          decimal_point: 6,
+          meta_info: '',
+        });
+        return { token_id: ASSET, tx_hash: HASH_A, ticker: 'bUSD', full_name: 'USD', tx_fee: 100_000_000_000 };
       },
+      store: () => ({}),
     });
     await expect(provider.mintPrivacyToken({ ticker: 'bUSD', name: 'USD', decimals: 6, totalSupply: '10' })).resolves.toMatchObject({
       tokenId: ASSET,
       totalSupply: '10',
+      deployTxHash: HASH_A,
+      deployFeeAtomic: '100000000000',
     });
-    expect(cleaned).toEqual(['bUSD']);
 
-    const failing = walletProvider({ deploy_new_asset: () => new RpcFailure(-1, 'nope') });
+    const failing = walletProvider({ register_privacy_token: () => new RpcFailure(-1, 'nope') });
     await expect(failing.provider.mintPrivacyToken({ ticker: 'X1', name: 'X', decimals: 0, totalSupply: '1' })).rejects.toThrow(/nope/);
-    expect(failing.cleaned).toEqual(['X1']);
-
-    const noWriter = new WalletRpcProvider({ wallet: new WalletRpc(new JsonRpcClient({ url: 'http://w', fetch: rpcFetch({}) })), network: 'testnet' });
-    await expect(noWriter.mintPrivacyToken({ ticker: 'X', name: 'X', decimals: 0 })).rejects.toBeInstanceOf(UnsupportedCapabilityError);
+    const broke = walletProvider({ register_privacy_token: () => new RpcFailure(-16, 'not enough money') });
+    await expect(broke.provider.mintPrivacyToken({ ticker: 'X1', name: 'X', decimals: 0, totalSupply: '1' })).rejects.toBeInstanceOf(InsufficientFundsError);
+    await expect(provider.mintPrivacyToken({ ticker: 'X', name: 'X', decimals: 0 })).rejects.toBeInstanceOf(ValidationError);
   });
 
-  it('sends a chunk with asset ids, flash priority and tx keys', async () => {
+  it('sends a chunk with token ids, flash priority and tx keys', async () => {
     const { provider } = walletProvider({
-      get_owned_assets: () => ({ assets: [{ asset_id: ASSET, full_name: 'USD', ticker: 'bUSD', decimal_point: 6 }] }),
+      get_owned_tokens: () => ({ tokens: [{ token_id: ASSET, full_name: 'USD', ticker: 'bUSD', decimal_point: 6 }] }),
       transfer: (p) => {
         expect(p).toMatchObject({ priority: 5, get_tx_key: true });
-        expect((p.destinations as Array<Record<string, unknown>>)[0]).toMatchObject({ address: ALICE, amount: 2_000_000, asset_id: ASSET });
+        expect((p.destinations as Array<Record<string, unknown>>)[0]).toMatchObject({ address: ALICE, amount: 2_000_000, token_id: ASSET });
         return { tx_hash: HASH_A, tx_key: 'key', fee: 50_000_000 };
       },
     });
@@ -259,7 +263,73 @@ describe('WalletRpcProvider', () => {
     expect(parts).toEqual([
       { txHash: HASH_A, txKey: 'key', feeAtomic: '50000000', burnedAtomic: '40000000', recipientIds: ['a'], inPool: true, blockHeight: null },
     ]);
-    await expect(provider.sendBatchChunk([recipient('a', ALICE, '1'), recipient('b', BOB, '1', ASSET)], false)).rejects.toThrow(/single asset/);
+    await expect(provider.sendBatchChunk([recipient('a', ALICE, '1'), recipient('b', BOB, '1', ASSET)], false)).rejects.toThrow(/single token/);
+  });
+
+  it('reads decimals of tokens it did not register from the daemon (get_token_info)', async () => {
+    const { provider } = walletProvider(
+      {
+        get_owned_tokens: () => ({ tokens: [] }),
+        transfer: (p) => {
+          expect((p.destinations as Array<Record<string, unknown>>)[0]).toMatchObject({ amount: 1_500, token_id: ASSET });
+          return { tx_hash: HASH_A, tx_key: 'key', fee: 1 };
+        },
+        store: () => ({}),
+      },
+      { get_token_info: (p) => ({ token_id: p.token_id, ticker: 'AUR', full_name: 'Aurora', current_supply: 1, total_max_supply: 1, decimal_point: 3 }) },
+    );
+    await expect(provider.sendBatchChunk([recipient('a', ALICE, '1.5', ASSET)], false)).resolves.toHaveLength(1);
+    const unknown = walletProvider({ get_owned_tokens: () => ({ tokens: [] }) });
+    await expect(unknown.provider.sendBatchChunk([recipient('a', ALICE, '1', ASSET)], false)).rejects.toThrow(/Unknown decimals/);
+  });
+
+  it('flags a split for reconciliation when the mapping is ambiguous or the amounts do not add up', async () => {
+    // ALICE is paid twice and the wallet split her two payments across both txs.
+    const ambiguous = walletProvider({
+      transfer: () => new RpcFailure(-4, 'transaction would be too large'),
+      transfer_split: () => ({ tx_hash_list: [HASH_A, HASH_B], tx_key_list: ['ka', 'kb'], fee_list: [1, 2] }),
+      check_tx_key: (p) => ({ received: p.address === ALICE ? 1_000_000_000 : p.txid === HASH_B ? 1_000_000_000 : 0, in_pool: true, confirmations: 0 }),
+      store: () => ({}),
+    });
+    const split = await ambiguous.provider.sendBatchChunk([recipient('a1', ALICE, '1'), recipient('a2', ALICE, '1'), recipient('b', BOB, '1')], false);
+    expect(split.map((p) => p.txHash)).toEqual([HASH_A, HASH_B]);
+    expect(split.every((p) => p.needsReconciliation)).toBe(true);
+    expect(split.flatMap((p) => p.recipientIds).sort()).toEqual(['a1', 'a2', 'b']);
+
+    // BOB received more than he was sent: the mapping is not trustworthy.
+    const overpaid = walletProvider({
+      transfer: () => new RpcFailure(-4, 'transaction would be too large'),
+      transfer_split: () => ({ tx_hash_list: [HASH_A, HASH_B], tx_key_list: ['ka', 'kb'], fee_list: [1, 2] }),
+      check_tx_key: (p) => ({ received: p.txid === HASH_A ? (p.address === ALICE ? 1_000_000_000 : 0) : p.address === BOB ? 2_000_000_000 : 0, in_pool: true, confirmations: 0 }),
+      store: () => ({}),
+    });
+    const parts = await overpaid.provider.sendBatchChunk([recipient('a', ALICE, '1'), recipient('b', BOB, '1')], false);
+    expect(parts.map((p) => [p.txHash, p.recipientIds])).toEqual([
+      [HASH_A, ['a']],
+      [HASH_B, ['b']],
+    ]);
+    expect(parts.every((p) => p.needsReconciliation)).toBe(true);
+  });
+
+  it('attributes a split token payroll with token_received', async () => {
+    const { provider } = walletProvider({
+      get_owned_tokens: () => ({ tokens: [{ token_id: ASSET, full_name: 'USD', ticker: 'bUSD', decimal_point: 6 }] }),
+      transfer: () => new RpcFailure(-4, 'transaction would be too large'),
+      transfer_split: () => ({ tx_hash_list: [HASH_A, HASH_B], tx_key_list: ['ka', 'kb'], fee_list: [1, 2] }),
+      check_tx_key: (p) => ({
+        received: 0,
+        token_received: (p.txid === HASH_A) === (p.address === ALICE) ? [{ token_id: ASSET.toUpperCase(), amount: 1_000_000 }] : [],
+        in_pool: true,
+        confirmations: 0,
+      }),
+      store: () => ({}),
+    });
+    const parts = await provider.sendBatchChunk([recipient('a', ALICE, '1', ASSET), recipient('b', BOB, '1', ASSET)], false);
+    expect(parts.map((p) => [p.txHash, p.recipientIds])).toEqual([
+      [HASH_A, ['a']],
+      [HASH_B, ['b']],
+    ]);
+    expect(parts.every((p) => !p.needsReconciliation)).toBe(true);
   });
 
   it('falls back to transfer_split and attributes recipients with check_tx_key', async () => {
@@ -299,6 +369,15 @@ describe('WalletRpcProvider', () => {
     expect(flagged[0]?.needsReconciliation).toBe(true);
   });
 
+  it('reports an unknown outcome when transfer_split succeeds without tx hashes', async () => {
+    const { provider } = walletProvider({
+      transfer: () => new RpcFailure(-4, 'transaction would be too large'),
+      transfer_split: () => ({ fee_list: [1] }),
+      store: () => ({}),
+    });
+    await expect(provider.sendBatchChunk([recipient('a', ALICE, '1')], false)).rejects.toBeInstanceOf(OutcomeUnknownError);
+  });
+
   it('reports an unknown outcome when a transfer times out', async () => {
     const wallet = new WalletRpc(
       new JsonRpcClient({
@@ -324,8 +403,8 @@ describe('WalletRpcProvider', () => {
   it('verifies with check_tx_key, receiver view, daemon inspection and signatures', async () => {
     const { provider } = walletProvider(
       {
-        check_tx_key: () => ({ received: 2_000_000, in_pool: false, confirmations: 4 }),
-        get_transfer_by_txid: () => ({ transfer: { txid: HASH_A, type: 'in', amount: 2_000_000, address: ALICE, asset_id: ASSET } }),
+        check_tx_key: () => ({ received: 0, token_received: [{ token_id: ASSET, amount: 2_000_000 }], in_pool: false, confirmations: 4 }),
+        get_transfer_by_txid: () => ({ transfer: { txid: HASH_A, type: 'in', amount: 2_000_000, address: ALICE, token_id: ASSET } }),
         verify: () => ({ good: true }),
         sign: () => ({ signature: 'SigV1x' }),
         get_address: () => ({ address: ALICE }),
@@ -337,7 +416,11 @@ describe('WalletRpcProvider', () => {
       },
     );
     const sources = provider.verificationSources();
-    await expect(sources.checkTxKey(HASH_A, 'k', ALICE)).resolves.toMatchObject({ receivedAtomic: 2_000_000n, blockHeight: 100 });
+    await expect(sources.checkTxKey(HASH_A, 'k', ALICE)).resolves.toMatchObject({
+      receivedAtomic: 0n,
+      tokenReceived: [{ tokenId: ASSET, amountAtomic: 2_000_000n }],
+      blockHeight: 100,
+    });
     const result = await verifyPayment(
       { txHash: HASH_A, txKey: 'k', recipientAddress: ALICE, assetId: ASSET, amountAtomic: 2_000_000n },
       sources,
@@ -349,6 +432,55 @@ describe('WalletRpcProvider', () => {
     ).resolves.toMatchObject({ isValid: true, blockHeight: 100, confirmedAmount: '2' });
     await expect(provider.signMessage('m')).resolves.toEqual({ signature: 'SigV1x', address: ALICE });
     await expect(provider.getTxKey(HASH_A)).resolves.toBe('kk');
+  });
+
+  it('sends the feature-privacy-token request shapes for token operations and reads', async () => {
+    const seen: Record<string, Record<string, unknown>> = {};
+    const record = (method: string, result: unknown) => (p: Record<string, unknown>) => {
+      seen[method] = p;
+      return result;
+    };
+    const wallet = new WalletRpc(
+      new JsonRpcClient({
+        url: 'http://w',
+        fetch: rpcFetch({
+          mint_token: record('mint_token', { tx_hash: HASH_A, tx_key: 'k', fee: 1 }),
+          burn_token: record('burn_token', { tx_hash: HASH_B, fee: 0 }),
+          update_token: record('update_token', { tx_hash: HASH_A }),
+          get_owned_tokens: record('get_owned_tokens', { tokens: [{ token_id: ASSET, full_name: 'USD', ticker: 'bUSD', decimal_point: 6 }] }),
+          get_transfers: record('get_transfers', { out: [] }),
+          get_height: record('get_height', { height: 9 }),
+        }),
+      }),
+    );
+    await expect(wallet.mintToken(ASSET, 5n, 1, 2)).resolves.toMatchObject({ tx_hash: HASH_A });
+    expect(seen.mint_token).toEqual({ token_id: ASSET, amount: 5, priority: 1, account_index: 2, get_tx_key: true });
+    await wallet.burnToken(ASSET, 3n, 1);
+    expect(seen.burn_token).toEqual({ token_id: ASSET, amount: 3, priority: 1, account_index: 0, get_tx_key: true });
+    await wallet.updateToken(ASSET, { ticker: 'bUSD', full_name: 'USD v2', total_max_supply: 10n, current_supply: 10n, decimal_point: 6, meta_info: 'm' }, 1);
+    expect(JSON.parse(seen.update_token?.json_string as string)).toMatchObject({ version: 1, full_name: 'USD v2', meta_info: 'm' });
+    expect(seen.update_token).toMatchObject({ token_id: ASSET, priority: 1, account_index: 0 });
+    await expect(wallet.getOwnedTokens()).resolves.toMatchObject({ tokens: [{ token_id: ASSET }] });
+    await wallet.getTransfers({ minHeight: 100, accountIndex: 1, pool: false });
+    expect(seen.get_transfers).toEqual({ out: true, pending: true, pool: false, in: false, account_index: 1, filter_by_height: true, min_height: 100 });
+    await wallet.getTransfers({});
+    expect(seen.get_transfers).toEqual({ out: true, pending: true, pool: true, in: false, account_index: 0 });
+    await expect(wallet.getHeight()).resolves.toEqual({ height: 9 });
+  });
+
+  it('reads token metadata and the token list from the daemon', async () => {
+    const daemon = new DaemonRpc(
+      new JsonRpcClient({
+        url: 'http://d',
+        fetch: rpcFetch({
+          get_token_info: (p) => ({ token_id: p.token_id, ticker: 'AUR', full_name: 'Aurora', current_supply: 1, total_max_supply: 2, decimal_point: 8 }),
+          get_token_list: (p) => ({ token_ids: [`${p.offset}:${p.count}`] }),
+        }),
+      }),
+    );
+    await expect(daemon.getTokenInfo(ASSET)).resolves.toMatchObject({ token_id: ASSET, ticker: 'AUR', decimal_point: 8 });
+    await expect(daemon.getTokenList()).resolves.toEqual({ token_ids: ['0:100'] });
+    await expect(daemon.getTokenList(20, 5)).resolves.toEqual({ token_ids: ['20:5'] });
   });
 
   it('needs a daemon for BNS', () => {

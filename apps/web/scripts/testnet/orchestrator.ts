@@ -1,31 +1,54 @@
-// Phase 6 testnet orchestrator: pre-flight, UTXO pre-split, Privacy Token
-// deploy (bUSD + bAUDIT), forensic capture of the Proto tx format, live
-// asset-confusion check (AUD-04) and an x402 Flash payment. Idempotent:
-// every finished step is persisted to the state file and skipped on rerun.
+// Testnet orchestrator for Beldex-Coin/beldex@feature-privacy-token: pre-flight,
+// UTXO pre-split, privacy token registration (bUSD), forensic capture of a real
+// token transfer (check_tx_key token_received and BelFlow's wallet-free zyphora
+// decode, both compared with the amounts sent), a live token-confusion check
+// (AUD-04) and an x402 Flash payment. Idempotent: every finished step is
+// persisted to the state file and skipped on rerun.
 
+import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { BDX_DECIMALS, FundsLockedError, NATIVE_TOKEN_ID, PROTO_TESTNET_FORK_HEIGHT, WalletRpcProvider, belflowErrorCode, formatUnits, inspectionFromDecodedTx, parseUnits, toBigIntAmount, verifyPayment, waitForUnlockedFunds, type DaemonRpc, type WalletRpc, decodeZarcanumWithTxKey, parseZarcanumOutputs } from '@belflow/sdk';
-import { createAssetDescriptorWriter } from '@belflow/sdk/node';
+import {
+  BDX_DECIMALS,
+  FundsLockedError,
+  NATIVE_TOKEN_ID,
+  PROTO_TESTNET_FORK_HEIGHT,
+  WalletRpcProvider,
+  belflowErrorCode,
+  decodeZyphoraWithTxKey,
+  formatUnits,
+  parseUnits,
+  parseZyphoraOutputs,
+  toBigIntAmount,
+  verifyPayment,
+  waitForUnlockedFunds,
+  type CheckTxKeyResult,
+  type DaemonRpc,
+  type WalletRpc,
+} from '@belflow/sdk';
 import { InMemoryNonceStore, createAgentFetch, providerPayer, withX402 } from '@belflow/x402';
 
 export const EXPLORER_TX_URL = 'https://testnet.beldex.dev/tx/';
-const MIN_UNLOCKED_BDX = '5';
+/**
+ * Testnet token registration (src/beldex_economy.h): 50 BDX burned, 50 BDX
+ * governance fee and 100 BDX collateral locked for 518,400 blocks.
+ */
+const TOKEN_REGISTRATION_BDX = '200';
+const FEE_HEADROOM_BDX = '1';
 const PRESPLIT_OUTPUTS = 10;
 const PRESPLIT_AMOUNT_BDX = '0.5';
-const FEE_HEADROOM_BDX = '1';
 const X402_PRICE_BDX = '0.1';
-const TOKENS = [
-  { key: 'bUSD', ticker: 'bUSD', name: 'Beldex Confidential USD', decimals: 6, supply: '1000000' },
-  { key: 'bAUDIT', ticker: 'bAUDIT', name: 'BelFlow Adversarial Test Token', decimals: 6, supply: '500000' },
-] as const;
+/** Registration + pre-split + transfers + x402, rounded up. */
+const MIN_BDX = '250';
+const TOKEN = { key: 'bUSD', ticker: 'bUSD', name: 'BelFlow Test USD', decimals: 6, supply: '1000000' } as const;
+/** AUD-04 claims the bUSD payment was this token: any id other than the one actually paid. */
+export const AUD04_DECOY_TOKEN_ID = createHash('sha256').update('belflow-aud04-decoy-token').digest('hex');
 
 export interface OrchestratorDeps {
   wallet: WalletRpc;
   daemon?: DaemonRpc;
   /** Network info when no daemon is configured (public explorer). */
   explorerInfo?: () => Promise<{ height: number; nettype: string }>;
-  descriptorDir: string;
   artifactsDir: string;
   faucetAccountIndex?: number;
   log: (line: string) => void;
@@ -36,12 +59,11 @@ export interface OrchestratorDeps {
   explorerTxUrl?: string;
 }
 
-interface AssetRecord {
-  assetId: string;
+interface TokenRecord {
+  tokenId: string;
   ticker: string;
   decimals: number;
-  deployTxHash: string;
-  emitTxHash?: string;
+  registerTxHash: string;
 }
 
 export interface DeploymentState {
@@ -49,65 +71,74 @@ export interface DeploymentState {
   updatedAt: string;
   preflight?: { height: number; nettype: string; address: string; unlockedBdx: string };
   presplit?: { txHashes: string[]; outputs: number; faucetAccount?: number };
-  assets: Partial<Record<(typeof TOKENS)[number]['key'], AssetRecord>>;
+  /** Broadcast before the step finished: recorded so a rerun resumes instead of sending again. */
+  pending?: {
+    faucetTxHash?: string;
+    forensic?: { recipients: string[]; amountsAtomic: string[]; splitTxHashes: string[]; splitTxKeys: string[]; flash?: { txHash: string; txKey: string } };
+    aud04?: { txHash: string; txKey: string; victim: string };
+    x402TxHash?: string;
+  };
+  tokens: Partial<Record<typeof TOKEN.key, TokenRecord>>;
   forensic?: {
     splitTxHashes: string[];
     flashTxHash: string;
-    checkTxKey: Array<{ address: string; expectedAtomic: string; receivedAtomic: string; inPool: boolean }>;
-    extractorRecognizedAssetTags: boolean;
-    /** Every token output came back as received 0: check_tx_key does not count tx_out_zarcanum outputs. */
-    zarcanumIgnoredByCheckTxKey: boolean;
-    /** BelFlow's own tx_key decode of the zarcanum outputs, compared with what was actually sent. */
+    checkTxKey: Array<{ address: string; expectedAtomic: string; tokenReceivedAtomic: string; nativeReceivedAtomic: string; inPool: boolean }>;
+    /** Every recipient's check_tx_key token_received equals the amount sent, in the registered token. */
+    checkTxKeyMatchesSent: boolean;
+    /** BelFlow's wallet-free zyphora decode of the same outputs, compared with what was sent. */
     belflowDecoder: BelflowDecoderCheck;
     sampleFile: string;
   };
   aud04?: {
     txHash: string;
-    claimedAsset: string;
-    paidAsset: string;
+    claimedToken: string;
+    paidToken: string;
     rejected: boolean;
     failures: string[];
     level: string | null;
-    /** What check_tx_key alone reported for the attack output. */
-    checkTxKeyReceivedAtomic: string;
+    /** What check_tx_key reported for the attack output. */
+    tokenReceived: Array<{ tokenId: string; amountAtomic: string }>;
     diagnosis: Aud04Diagnosis;
   };
   x402?: { txHash: string; status: number; settledFromMempool: boolean | null; assetVerificationLevel: string | null };
   links: Record<string, string>;
 }
 
-/**
- * Why the live AUD-04 ended as it did. A check_tx_key that reports 0 is the
- * more fundamental cause, so it wins over a wallet-side ASSET_MISMATCH.
- */
-export type Aud04Diagnosis = 'ACCEPTED' | 'ZARCANUM_ZERO_RECEIVED_IN_CHECK_TX_KEY' | 'ASSET_MISMATCH_DETECTED' | 'REJECTED_OTHER';
+/** Why the live AUD-04 ended as it did. */
+export type Aud04Diagnosis = 'ACCEPTED' | 'ASSET_MISMATCH_DETECTED' | 'REJECTED_OTHER';
 
-export function diagnoseAud04(isValid: boolean, failures: string[], checkTxKeyReceived: bigint): Aud04Diagnosis {
+export function diagnoseAud04(isValid: boolean, failures: string[]): Aud04Diagnosis {
   if (isValid) return 'ACCEPTED';
-  if (checkTxKeyReceived === 0n) return 'ZARCANUM_ZERO_RECEIVED_IN_CHECK_TX_KEY';
   if (failures.includes('ASSET_MISMATCH')) return 'ASSET_MISMATCH_DETECTED';
   return 'REJECTED_OTHER';
 }
 
 export interface BelflowDecoderCheck {
-  status: 'matched' | 'mismatch' | 'no-zarcanum-outputs' | 'no-daemon' | 'error';
+  status: 'matched' | 'mismatch' | 'no-zyphora-outputs' | 'no-daemon' | 'error';
   detail?: string;
 }
 
-/** Runs BelFlow's zarcanum decoder on the real tx and checks every recipient got the sent amount in the sent asset. */
+/** Token amount check_tx_key reports for one token id. */
+export function tokenAmount(check: Pick<CheckTxKeyResult, 'token_received'>, tokenId: string): bigint {
+  return (check.token_received ?? [])
+    .filter((entry) => entry.token_id.toLowerCase() === tokenId.toLowerCase())
+    .reduce((sum, entry) => sum + toBigIntAmount(entry.amount), 0n);
+}
+
+/** Runs BelFlow's zyphora decoder on the real tx and checks every recipient got the sent amount in the sent token. */
 export function checkBelflowDecoder(
   decodedTx: Record<string, unknown> | undefined,
   txKey: string,
   expected: Array<{ address: string; amountAtomic: bigint }>,
-  assetId: string,
+  tokenId: string,
 ): BelflowDecoderCheck {
   if (!decodedTx) return { status: 'no-daemon' };
-  const outputs = parseZarcanumOutputs(decodedTx);
-  if (outputs.length === 0) return { status: 'no-zarcanum-outputs' };
+  const outputs = parseZyphoraOutputs(decodedTx);
+  if (outputs.length === 0) return { status: 'no-zyphora-outputs' };
   try {
     for (const { address, amountAtomic } of expected) {
-      const found = decodeZarcanumWithTxKey({ outputs, txKey, address });
-      const ok = found.length === 1 && found[0]?.assetId === assetId.toLowerCase() && found[0]?.amountAtomic === amountAtomic;
+      const found = decodeZyphoraWithTxKey({ outputs, txKey, address });
+      const ok = found.length === 1 && found[0]?.tokenId === tokenId.toLowerCase() && found[0]?.amountAtomic === amountAtomic;
       if (!ok) return { status: 'mismatch', detail: `${address.slice(0, 12)}…: ${JSON.stringify(found, (_k, v: unknown) => (typeof v === 'bigint' ? v.toString() : v))}` };
     }
     return { status: 'matched' };
@@ -124,7 +155,7 @@ async function loadState(deps: OrchestratorDeps): Promise<DeploymentState> {
   try {
     return JSON.parse(await readFile(statePath(deps), 'utf8')) as DeploymentState;
   } catch {
-    return { network: 'testnet', updatedAt: new Date().toISOString(), assets: {}, links: {} };
+    return { network: 'testnet', updatedAt: new Date().toISOString(), tokens: {}, links: {} };
   }
 }
 
@@ -139,11 +170,11 @@ let explorerPrefix = EXPLORER_TX_URL;
 const link = (hash: string) => `${explorerPrefix}${hash}`;
 const bdx = (value: string) => parseUnits(value, BDX_DECIMALS);
 
-async function waitFunds(deps: OrchestratorDeps, requirement: { minBdx: bigint; assetId?: string; minAsset?: bigint }, accountIndex = 0) {
+async function waitFunds(deps: OrchestratorDeps, requirement: { minBdx: bigint; tokenId?: string; minToken?: bigint }, accountIndex = 0) {
   return waitForUnlockedFunds(deps.wallet, {
     accountIndex,
     minBdxAtomic: requirement.minBdx,
-    ...(requirement.assetId && requirement.minAsset !== undefined ? { assetId: requirement.assetId, minAssetAtomic: requirement.minAsset } : {}),
+    ...(requirement.tokenId && requirement.minToken !== undefined ? { tokenId: requirement.tokenId, minTokenAtomic: requirement.minToken } : {}),
     ...(deps.sleep ? { sleep: deps.sleep } : {}),
     ...(deps.pollMs !== undefined ? { pollMs: deps.pollMs } : {}),
     ...(deps.unlockTimeoutMs !== undefined ? { timeoutMs: deps.unlockTimeoutMs } : {}),
@@ -174,9 +205,10 @@ async function preflight(deps: OrchestratorDeps, state: DeploymentState): Promis
   const unlocked = toBigIntAmount(balance.unlocked_balance);
   deps.log(`Pre-flight: testnet height ${info.height} (Proto active). Treasury ${address.slice(0, 12)}… unlocked ${formatUnits(unlocked, BDX_DECIMALS)} BDX.`);
   const next = { ...state, preflight: { height: info.height, nettype, address, unlockedBdx: formatUnits(unlocked, BDX_DECIMALS) } };
-  if (toBigIntAmount(balance.balance) < bdx(MIN_UNLOCKED_BDX)) {
+  // Only needed before the token is registered; later reruns spend far less.
+  if (!state.tokens[TOKEN.key] && toBigIntAmount(balance.balance) < bdx(MIN_BDX)) {
     const message = [
-      `Treasury needs at least ${MIN_UNLOCKED_BDX} BDX. Request testnet BDX from the Beldex faucet for:`,
+      `Treasury needs at least ${MIN_BDX} testnet BDX (token registration alone takes ${TOKEN_REGISTRATION_BDX}). Request testnet BDX for:`,
       `  ${address}`,
       'Then rerun `pnpm testnet:deploy` (finished steps are skipped).',
     ].join('\n');
@@ -190,142 +222,184 @@ async function presplit(deps: OrchestratorDeps, state: DeploymentState): Promise
   const own = await deps.wallet.createAddress('belflow-presplit', 0);
   const destinations = Array.from({ length: PRESPLIT_OUTPUTS }, () => ({ address: own.address, amount: bdx(PRESPLIT_AMOUNT_BDX) }));
   await waitFunds(deps, { minBdx: bdx(PRESPLIT_AMOUNT_BDX) * BigInt(PRESPLIT_OUTPUTS) + bdx(FEE_HEADROOM_BDX) });
-  const txHashes = [(await deps.wallet.transfer(destinations, 1, 0)).tx_hash];
-  if (deps.faucetAccountIndex !== undefined) {
-    const faucet = await deps.wallet.getAddress(deps.faucetAccountIndex);
-    await waitFunds(deps, { minBdx: bdx('5') + bdx(FEE_HEADROOM_BDX) });
-    txHashes.push((await deps.wallet.transfer(Array.from({ length: 5 }, () => ({ address: faucet.address, amount: bdx('1') })), 1, 0)).tx_hash);
-  }
+  const splitHash = (await deps.wallet.transfer(destinations, 1, 0)).tx_hash;
   await deps.wallet.store().catch(() => undefined);
-  deps.log(`Pre-split: ${PRESPLIT_OUTPUTS} BDX outputs${deps.faucetAccountIndex !== undefined ? ' + faucet account funding' : ''} (${txHashes.length} tx).`);
+  deps.log(`Pre-split: ${PRESPLIT_OUTPUTS} BDX outputs (tx ${splitHash.slice(0, 16)}…).`);
+  // Recorded at once, before the faucet funding (which may wait for unlocks or fail).
   return saveState(deps, {
     ...state,
-    presplit: { txHashes, outputs: PRESPLIT_OUTPUTS, ...(deps.faucetAccountIndex !== undefined ? { faucetAccount: deps.faucetAccountIndex } : {}) },
-    links: { ...state.links, ...Object.fromEntries(txHashes.map((h, i) => [`presplit_${i + 1}`, link(h)])) },
+    presplit: { txHashes: [splitHash], outputs: PRESPLIT_OUTPUTS },
+    links: { ...state.links, presplit_1: link(splitHash) },
   });
 }
 
-async function deployAssets(deps: OrchestratorDeps, state: DeploymentState, provider: WalletRpcProvider): Promise<DeploymentState> {
-  let next = state;
-  for (const token of TOKENS) {
-    if (next.assets[token.key]) continue;
-    await waitFunds(deps, { minBdx: bdx(FEE_HEADROOM_BDX) });
-    const minted = await provider.mintPrivacyToken({ ticker: token.ticker, name: token.name, decimals: token.decimals, totalSupply: token.supply });
-    const record: AssetRecord = { assetId: minted.tokenId, ticker: token.ticker, decimals: token.decimals, deployTxHash: minted.deployTxHash ?? '' };
-    deps.log(`Deployed ${token.ticker}: asset ${record.assetId.slice(0, 16)}… tx ${record.deployTxHash.slice(0, 16)}…`);
-    const supply = parseUnits(token.supply, token.decimals);
-    // Wait for the deploy to confirm, then emit only if the deploy did not mint the supply.
-    try {
-      await waitFunds(deps, { minBdx: bdx('0.01'), assetId: record.assetId, minAsset: supply });
-    } catch (error) {
-      if (belflowErrorCode(error) !== 'INSUFFICIENT_FUNDS') throw error;
-      const emitted = await deps.wallet.emitAsset(record.assetId, supply, 1);
-      record.emitTxHash = emitted.tx_hash;
-      deps.log(`Emitted ${token.supply} ${token.ticker} (tx ${emitted.tx_hash.slice(0, 16)}…).`);
-      await waitFunds(deps, { minBdx: bdx('0.01'), assetId: record.assetId, minAsset: supply });
-    }
-    next = await saveState(deps, {
-      ...next,
-      assets: { ...next.assets, [token.key]: record },
-      links: {
-        ...next.links,
-        [`deploy_${token.ticker}`]: link(record.deployTxHash),
-        ...(record.emitTxHash ? { [`emit_${token.ticker}`]: link(record.emitTxHash) } : {}),
-      },
-    });
-  }
-  return next;
+/** Funds the faucet account from the treasury, once. */
+async function fundFaucet(deps: OrchestratorDeps, state: DeploymentState): Promise<DeploymentState> {
+  if (deps.faucetAccountIndex === undefined || state.presplit?.faucetAccount !== undefined || state.pending?.faucetTxHash) return state;
+  const faucet = await deps.wallet.getAddress(deps.faucetAccountIndex);
+  await waitFunds(deps, { minBdx: bdx('5') + bdx(FEE_HEADROOM_BDX) });
+  const txHash = (await deps.wallet.transfer(Array.from({ length: 5 }, () => ({ address: faucet.address, amount: bdx('1') })), 1, 0)).tx_hash;
+  await deps.wallet.store().catch(() => undefined);
+  deps.log(`Faucet account ${deps.faucetAccountIndex} funded (tx ${txHash.slice(0, 16)}…).`);
+  const presplitRecord = state.presplit ? { ...state.presplit, txHashes: [...state.presplit.txHashes, txHash], faucetAccount: deps.faucetAccountIndex } : undefined;
+  return saveState(deps, {
+    ...state,
+    ...(presplitRecord ? { presplit: presplitRecord } : {}),
+    pending: { ...state.pending, faucetTxHash: txHash },
+    links: { ...state.links, [`presplit_${(state.presplit?.txHashes.length ?? 0) + 1}`]: link(txHash) },
+  });
+}
+
+async function registerToken(deps: OrchestratorDeps, state: DeploymentState, provider: WalletRpcProvider): Promise<DeploymentState> {
+  if (state.tokens[TOKEN.key]) return state;
+  await waitFunds(deps, { minBdx: bdx(TOKEN_REGISTRATION_BDX) + bdx(FEE_HEADROOM_BDX) });
+  const registered = await provider.mintPrivacyToken({ ticker: TOKEN.ticker, name: TOKEN.name, decimals: TOKEN.decimals, totalSupply: TOKEN.supply });
+  const record: TokenRecord = { tokenId: registered.tokenId, ticker: TOKEN.ticker, decimals: TOKEN.decimals, registerTxHash: registered.deployTxHash ?? '' };
+  deps.log(`Registered ${TOKEN.ticker}: token ${record.tokenId.slice(0, 16)}… tx ${record.registerTxHash.slice(0, 16)}…`);
+  // Recorded before waiting: a timeout must never lead a rerun to register (and pay for) a second token.
+  // Later steps wait for the supply to unlock themselves.
+  return saveState(deps, {
+    ...state,
+    tokens: { ...state.tokens, [TOKEN.key]: record },
+    links: { ...state.links, [`register_${TOKEN.ticker}`]: link(record.registerTxHash) },
+  });
 }
 
 async function forensic(deps: OrchestratorDeps, state: DeploymentState, provider: WalletRpcProvider): Promise<DeploymentState> {
   if (state.forensic) return state;
-  const busd = state.assets.bUSD;
-  if (!busd) throw new Error('bUSD must be deployed first.');
-  const recipients = await Promise.all([0, 1, 2].map(async (i) => (await deps.wallet.createAddress(`belflow-employee-${i}`, 0)).address));
-  const amounts = recipients.map((_r, i) => parseUnits(String(i + 1), busd.decimals));
-  await waitFunds(deps, { minBdx: bdx(FEE_HEADROOM_BDX), assetId: busd.assetId, minAsset: amounts.reduce((a, b) => a + b, 0n) });
-  const split = await deps.wallet.transferSplit(recipients.map((address, i) => ({ address, amount: amounts[i] as bigint, asset_id: busd.assetId })), 1, 0);
-  deps.log(`transfer_split (3 bUSD outputs): ${split.tx_hash_list.length} tx.`);
-
-  await waitFunds(deps, { minBdx: bdx(FEE_HEADROOM_BDX), assetId: busd.assetId, minAsset: parseUnits('1', busd.decimals) });
-  const [flash] = await provider.sendBatchChunk(
-    [{ id: 'forensic-flash', recipientInput: recipients[0] as string, resolvedAddress: recipients[0] as string, amount: '1', tokenId: busd.assetId }],
-    true,
-  );
-  if (!flash) throw new Error('Flash payment returned no transaction.');
-  deps.log(`Flash bUSD payment (priority 5): ${flash.txHash.slice(0, 16)}…`);
-
-  const tokenTx = split.tx_hash_list[0] as string;
-  const tokenKey = split.tx_key_list?.[0] ?? '';
-  const checks = [];
-  for (const [i, address] of recipients.entries()) {
-    const check = await deps.wallet.checkTxKey(tokenTx, tokenKey, address);
-    checks.push({ address, expectedAtomic: (amounts[i] as bigint).toString(), receivedAtomic: toBigIntAmount(check.received).toString(), inPool: check.in_pool });
+  const busd = state.tokens.bUSD;
+  if (!busd) throw new Error('bUSD must be registered first.');
+  let next = state;
+  let pending = next.pending?.forensic;
+  if (!pending) {
+    const recipients = await Promise.all([0, 1, 2].map(async (i) => (await deps.wallet.createAddress(`belflow-employee-${i}`, 0)).address));
+    const amounts = recipients.map((_r, i) => parseUnits(String(i + 1), busd.decimals));
+    await waitFunds(deps, { minBdx: bdx(FEE_HEADROOM_BDX), tokenId: busd.tokenId, minToken: amounts.reduce((a, b) => a + b, 0n) });
+    const split = await deps.wallet.transferSplit(recipients.map((address, i) => ({ address, amount: amounts[i] as bigint, token_id: busd.tokenId })), 1, 0);
+    pending = {
+      recipients,
+      amountsAtomic: amounts.map(String),
+      splitTxHashes: split.tx_hash_list,
+      splitTxKeys: split.tx_hash_list.map((_hash, i) => split.tx_key_list?.[i] ?? ''),
+    };
+    // Recorded before anything else can fail: a rerun must never send this payroll again.
+    next = await saveState(deps, { ...next, pending: { ...next.pending, forensic: pending } });
+    deps.log(`transfer_split (3 bUSD outputs to subaddresses): ${split.tx_hash_list.length} tx.`);
   }
-  const decoded = deps.daemon ? (await deps.daemon.getTransactions([tokenTx]))[0] : undefined;
+  if (!pending.flash) {
+    await waitFunds(deps, { minBdx: bdx(FEE_HEADROOM_BDX), tokenId: busd.tokenId, minToken: parseUnits('1', busd.decimals) });
+    const [flash] = await provider.sendBatchChunk(
+      [{ id: 'forensic-flash', recipientInput: pending.recipients[0] as string, resolvedAddress: pending.recipients[0] as string, amount: '1', tokenId: busd.tokenId }],
+      true,
+    );
+    if (!flash) throw new Error('Flash payment returned no transaction.');
+    pending = { ...pending, flash: { txHash: flash.txHash, txKey: flash.txKey } };
+    next = await saveState(deps, { ...next, pending: { ...next.pending, forensic: pending } });
+    deps.log(`Flash bUSD payment (priority 5): ${flash.txHash.slice(0, 16)}…`);
+  }
+
+  // transfer_split may produce several txs: each recipient's amount is summed over all of them.
+  const checks = [];
+  for (const [i, address] of pending.recipients.entries()) {
+    let tokenReceived = 0n;
+    let nativeReceived = 0n;
+    let inPool = false;
+    for (const [part, txHash] of pending.splitTxHashes.entries()) {
+      const check = await deps.wallet.checkTxKey(txHash, pending.splitTxKeys[part] ?? '', address);
+      tokenReceived += tokenAmount(check, busd.tokenId);
+      nativeReceived += toBigIntAmount(check.received);
+      inPool ||= check.in_pool;
+    }
+    checks.push({ address, expectedAtomic: pending.amountsAtomic[i] ?? '0', tokenReceivedAtomic: tokenReceived.toString(), nativeReceivedAtomic: nativeReceived.toString(), inPool });
+  }
+  const tokenTx = pending.splitTxHashes[0] as string;
+  const decodedParts = deps.daemon ? await deps.daemon.getTransactions(pending.splitTxHashes) : undefined;
   const transferView = await deps.wallet.getTransferByTxid(tokenTx).catch((error: Error) => ({ error: error.message }));
   const sampleFile = path.join(deps.artifactsDir, 'proto-tx-structure.json');
   await writeFile(
     sampleFile,
-    `${JSON.stringify({ capturedAt: new Date().toISOString(), txHash: tokenTx, assetId: busd.assetId, daemon_get_transactions: decoded ?? null, wallet_get_transfer_by_txid: transferView, check_tx_key: checks }, (_k, v: unknown) => (typeof v === 'bigint' ? v.toString() : v), 2)}\n`,
+    `${JSON.stringify({ capturedAt: new Date().toISOString(), txHashes: pending.splitTxHashes, tokenId: busd.tokenId, daemon_get_transactions: decodedParts ?? null, wallet_get_transfer_by_txid: transferView, check_tx_key: checks }, (_k, v: unknown) => (typeof v === 'bigint' ? v.toString() : v), 2)}\n`,
     'utf8',
   );
-  const recognized = decoded ? inspectionFromDecodedTx(decoded).assetIds !== null : false;
-  const zarcanumIgnored = checks.every((check) => check.expectedAtomic !== '0' && check.receivedAtomic === '0');
-  const belflowDecoder = checkBelflowDecoder(
-    decoded as unknown as Record<string, unknown> | undefined,
-    tokenKey,
-    recipients.map((address, i) => ({ address, amountAtomic: amounts[i] as bigint })),
-    busd.assetId,
-  );
-  deps.log(`BelFlow zarcanum decoder vs. sent amounts: ${belflowDecoder.status}${belflowDecoder.detail ? ` (${belflowDecoder.detail})` : ''}.`);
-  deps.log(`Forensic dump written. Asset tags recognized by the extractor: ${recognized ? 'yes (DAEMON_EXTRACTED possible)' : 'no'}.`);
-  if (zarcanumIgnored) deps.log('check_tx_key returned 0 for every Confidential Asset output (tx_out_zarcanum not counted). Recorded; continuing.');
+  const checkTxKeyMatchesSent = checks.every((check) => check.tokenReceivedAtomic === check.expectedAtomic);
+  const belflowDecoder =
+    pending.splitTxHashes.length === 1
+      ? checkBelflowDecoder(
+          decodedParts?.[0] as unknown as Record<string, unknown> | undefined,
+          pending.splitTxKeys[0] ?? '',
+          pending.recipients.map((address, i) => ({ address, amountAtomic: BigInt(pending.amountsAtomic[i] ?? '0') })),
+          busd.tokenId,
+        )
+      : { status: 'error' as const, detail: `transfer_split produced ${pending.splitTxHashes.length} txs; decode them one by one from ${path.basename(sampleFile)}` };
+  deps.log(`check_tx_key token_received vs. sent amounts: ${checkTxKeyMatchesSent ? 'matched' : 'MISMATCH'}.`);
+  deps.log(`BelFlow wallet-free zyphora decoder vs. sent amounts: ${belflowDecoder.status}${belflowDecoder.detail ? ` (${belflowDecoder.detail})` : ''}.`);
+  const { forensic: _done, ...restPending } = next.pending ?? {};
   return saveState(deps, {
-    ...state,
-    forensic: { splitTxHashes: split.tx_hash_list, flashTxHash: flash.txHash, checkTxKey: checks, extractorRecognizedAssetTags: recognized, zarcanumIgnoredByCheckTxKey: zarcanumIgnored, belflowDecoder, sampleFile: path.basename(sampleFile) },
-    links: { ...state.links, transfer_split: link(tokenTx), flash_payment: link(flash.txHash) },
+    ...next,
+    pending: restPending,
+    forensic: {
+      splitTxHashes: pending.splitTxHashes,
+      flashTxHash: pending.flash?.txHash ?? '',
+      checkTxKey: checks,
+      checkTxKeyMatchesSent,
+      belflowDecoder,
+      sampleFile: path.basename(sampleFile),
+    },
+    links: { ...next.links, transfer_split: link(tokenTx), ...(pending.flash ? { flash_payment: link(pending.flash.txHash) } : {}) },
   });
 }
 
 async function aud04(deps: OrchestratorDeps, state: DeploymentState, provider: WalletRpcProvider): Promise<DeploymentState> {
   if (state.aud04) return state;
-  const busd = state.assets.bUSD;
-  const baudit = state.assets.bAUDIT;
-  if (!busd || !baudit) throw new Error('Deploy bUSD and bAUDIT first.');
-  const victim = (await deps.wallet.createAddress('belflow-aud04-merchant', 0)).address;
-  await waitFunds(deps, { minBdx: bdx(FEE_HEADROOM_BDX), assetId: baudit.assetId, minAsset: parseUnits('100', baudit.decimals) });
-  const [attack] = await provider.sendBatchChunk([{ id: 'aud04', recipientInput: victim, resolvedAddress: victim, amount: '100', tokenId: baudit.assetId }], false);
-  if (!attack) throw new Error('AUD-04 payment returned no transaction.');
-  // Wait for confirmation so the verdict is about the asset, not NOT_CONFIRMED.
-  await waitConfirmed(deps, attack.txHash, attack.txKey, victim);
+  const busd = state.tokens.bUSD;
+  if (!busd) throw new Error('Register bUSD first.');
+  let next = state;
+  let attack = next.pending?.aud04;
+  if (!attack) {
+    const victim = (await deps.wallet.createAddress('belflow-aud04-merchant', 0)).address;
+    await waitFunds(deps, { minBdx: bdx(FEE_HEADROOM_BDX), tokenId: busd.tokenId, minToken: parseUnits('100', busd.decimals) });
+    const [sent] = await provider.sendBatchChunk([{ id: 'aud04', recipientInput: victim, resolvedAddress: victim, amount: '100', tokenId: busd.tokenId }], false);
+    if (!sent) throw new Error('AUD-04 payment returned no transaction.');
+    attack = { txHash: sent.txHash, txKey: sent.txKey, victim };
+    // Recorded before waiting for confirmation, so a timeout never resends it.
+    next = await saveState(deps, { ...next, pending: { ...next.pending, aud04: attack } });
+  }
+  // Wait for confirmation so the verdict is about the token, not NOT_CONFIRMED.
+  await waitConfirmed(deps, attack.txHash, attack.txKey, attack.victim);
   const result = await verifyPayment(
-    { txHash: attack.txHash, txKey: attack.txKey, recipientAddress: victim, assetId: busd.assetId, amountAtomic: parseUnits('100', busd.decimals) },
+    { txHash: attack.txHash, txKey: attack.txKey, recipientAddress: attack.victim, assetId: AUD04_DECOY_TOKEN_ID, amountAtomic: parseUnits('100', busd.decimals) },
     provider.verificationSources(),
     { amountMatch: 'exact' },
   );
-  const plainCheck = await deps.wallet.checkTxKey(attack.txHash, attack.txKey, victim);
-  const checkTxKeyReceived = toBigIntAmount(plainCheck.received);
-  const diagnosis = diagnoseAud04(result.isValid, result.failures, checkTxKeyReceived);
-  deps.log(`AUD-04 live: 100 bAUDIT presented as 100 bUSD → ${result.isValid ? 'ACCEPTED (finding!)' : `rejected (${result.failures.join(', ')})`}; check_tx_key received ${checkTxKeyReceived}; diagnosis ${diagnosis}.`);
+  const plainCheck = await deps.wallet.checkTxKey(attack.txHash, attack.txKey, attack.victim);
+  const tokenReceived = (plainCheck.token_received ?? []).map((entry) => ({ tokenId: entry.token_id, amountAtomic: toBigIntAmount(entry.amount).toString() }));
+  const diagnosis = diagnoseAud04(result.isValid, result.failures);
+  deps.log(`AUD-04 live: 100 bUSD presented as another token → ${result.isValid ? 'ACCEPTED (finding!)' : `rejected (${result.failures.join(', ')})`}; diagnosis ${diagnosis}.`);
+  const { aud04: _done, ...restPending } = next.pending ?? {};
   return saveState(deps, {
-    ...state,
+    ...next,
+    pending: restPending,
     aud04: {
       txHash: attack.txHash,
-      claimedAsset: busd.assetId,
-      paidAsset: baudit.assetId,
+      claimedToken: AUD04_DECOY_TOKEN_ID,
+      paidToken: busd.tokenId,
       rejected: !result.isValid,
       failures: result.failures,
       level: result.assetVerificationLevel,
-      checkTxKeyReceivedAtomic: checkTxKeyReceived.toString(),
+      tokenReceived,
       diagnosis,
     },
-    links: { ...state.links, aud04_attack: link(attack.txHash) },
+    links: { ...next.links, aud04_attack: link(attack.txHash) },
   });
 }
 
 async function x402Flash(deps: OrchestratorDeps, state: DeploymentState, provider: WalletRpcProvider): Promise<DeploymentState> {
   if (state.x402) return state;
+  if (state.pending?.x402TxHash) {
+    // A previous run paid but did not record the response. Never pay a new challenge automatically.
+    deps.log(`x402: a payment was already sent (${state.pending.x402TxHash.slice(0, 16)}…) without a recorded response. Not paying again.`);
+    return state;
+  }
   const merchant = (await deps.wallet.createAddress('belflow-x402-oracle', 0)).address;
   const price = bdx(X402_PRICE_BDX);
   const handler = withX402(
@@ -349,7 +423,13 @@ async function x402Flash(deps: OrchestratorDeps, state: DeploymentState, provide
     },
   });
   await waitFunds(deps, { minBdx: price + bdx(FEE_HEADROOM_BDX) });
-  const response = await agentFetch('http://belflow.local/api/x402/demo');
+  let response: Response;
+  try {
+    response = await agentFetch('http://belflow.local/api/x402/demo');
+  } catch (error) {
+    if (paidTx) await saveState(deps, { ...state, pending: { ...state.pending, x402TxHash: paidTx } });
+    throw error;
+  }
   const body = (await response.json().catch(() => ({}))) as { settledFromMempool?: boolean; level?: string | null };
   deps.log(`x402 Flash: HTTP ${response.status}, tx ${paidTx.slice(0, 16)}…, settled from mempool: ${String(body.settledFromMempool ?? 'n/a')}.`);
   return saveState(deps, {
@@ -359,7 +439,7 @@ async function x402Flash(deps: OrchestratorDeps, state: DeploymentState, provide
   });
 }
 
-/** Runs every step not yet recorded. Exit 2 = needs faucet funds, 3 = funds locked/timeout (rerun later). */
+/** Runs every step not yet recorded. Exit 2 = needs testnet funds, 3 = funds locked/timeout (rerun later). */
 export async function runOrchestrator(deps: OrchestratorDeps): Promise<OrchestratorResult> {
   explorerPrefix = deps.explorerTxUrl ?? EXPLORER_TX_URL;
   let state = await loadState(deps);
@@ -367,13 +447,13 @@ export async function runOrchestrator(deps: OrchestratorDeps): Promise<Orchestra
     wallet: deps.wallet,
     network: 'testnet',
     ...(deps.daemon ? { daemon: deps.daemon } : {}),
-    writeAssetDescriptor: createAssetDescriptorWriter(deps.descriptorDir),
   });
   try {
     const checked = await preflight(deps, state);
     if ('exitCode' in checked) return checked;
     state = await presplit(deps, checked);
-    state = await deployAssets(deps, state, provider);
+    state = await fundFaucet(deps, state);
+    state = await registerToken(deps, state, provider);
     state = await forensic(deps, state, provider);
     state = await aud04(deps, state, provider);
     state = await x402Flash(deps, state, provider);

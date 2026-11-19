@@ -186,7 +186,7 @@ export class MockChain {
     return { asset, tx };
   }
 
-  /** emit_asset: the owner mints more supply of an asset it deployed. */
+  /** mint_token: the owner mints more supply of a token it registered. */
   emitAsset(owner: string, assetId: string, amount: bigint): MockTx {
     const asset = own(this.state.assets, assetId);
     if (!asset) throw new ValidationError(`Unknown asset ${assetId}.`);
@@ -232,13 +232,20 @@ export class MockChain {
     const tx = this.requireTx(txHash);
     const keyMatches = /^[0-9a-f]{64}$/i.test(txKey) && timingSafeEqualHex(tx.txKey, txKey.toLowerCase());
     const received = keyMatches ? tx.outputs.filter((output) => output.address === address) : [];
-    const assets = [...new Set(received.map((output) => output.assetId))];
+    // Same shape as check_tx_key on feature-privacy-token: BDX in `received`,
+    // each privacy token in `token_received`.
+    const tokenTotals = new Map<string, bigint>();
+    let nativeAtomic = 0n;
+    for (const output of received) {
+      if (output.assetId === NATIVE_TOKEN_ID) nativeAtomic += BigInt(output.amount);
+      else tokenTotals.set(output.assetId, (tokenTotals.get(output.assetId) ?? 0n) + BigInt(output.amount));
+    }
     return {
-      receivedAtomic: received.reduce((sum, output) => sum + BigInt(output.amount), 0n),
+      receivedAtomic: nativeAtomic,
+      tokenReceived: [...tokenTotals].map(([tokenId, amountAtomic]) => ({ tokenId, amountAtomic })),
       inPool: tx.height === null,
       confirmations: tx.height === null ? 0 : this.state.height - tx.height + 1,
       blockHeight: tx.height,
-      ...(assets.length === 1 ? { assetId: assets[0] } : {}),
     };
   }
 

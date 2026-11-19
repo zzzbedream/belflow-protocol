@@ -1,14 +1,15 @@
 // pnpm testnet:deploy [--emulate]
 //
-// Real run: needs BELDEX_WALLET_RPC_URL (+ _USER/_PASSWORD), BELDEX_ASSET_DESCRIPTOR_DIR,
-// and ideally BELDEX_DAEMON_RPC_URL (otherwise the public explorer supplies network info).
+// Real run: needs BELDEX_WALLET_RPC_URL (+ _USER/_PASSWORD) for a wallet-rpc built
+// from Beldex-Coin/beldex@feature-privacy-token, and ideally BELDEX_DAEMON_RPC_URL
+// (otherwise the public explorer supplies network info and the wallet-free
+// zyphora decode is skipped).
 // Writes docs/artifacts/testnet-deployments.json and docs/artifacts/proto-tx-structure.json.
 //
 // --emulate: runs every step against the offline wallet-rpc/daemon emulator and
 // writes to apps/web/.data/emulated-artifacts (never mixed with real evidence).
 
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import { DaemonRpc, JsonRpcClient, WalletRpc } from '@belflow/sdk';
 import { createBeldexEmulator } from './testnet/emulator';
@@ -25,9 +26,8 @@ function env(name: string): string | undefined {
 
 async function realDeps(log: (line: string) => void): Promise<OrchestratorDeps> {
   const walletUrl = env('BELDEX_WALLET_RPC_URL');
-  const descriptorDir = env('BELDEX_ASSET_DESCRIPTOR_DIR');
-  if (!walletUrl || !descriptorDir) {
-    throw new Error('Set BELDEX_WALLET_RPC_URL and BELDEX_ASSET_DESCRIPTOR_DIR (see docs/testnet-setup.md), or use --emulate.');
+  if (!walletUrl) {
+    throw new Error('Set BELDEX_WALLET_RPC_URL (see docs/testnet-setup.md), or use --emulate.');
   }
   const user = env('BELDEX_WALLET_RPC_USER');
   const password = env('BELDEX_WALLET_RPC_PASSWORD');
@@ -42,7 +42,6 @@ async function realDeps(log: (line: string) => void): Promise<OrchestratorDeps> 
       const body = (await (await fetch(`${explorer}/networkinfo`)).json()) as { data: { height: number; nettype: string } };
       return { height: body.data.height, nettype: body.data.nettype };
     },
-    descriptorDir,
     artifactsDir: path.join(REPO_ROOT, 'docs', 'artifacts'),
     ...(faucetIndex && env('BELFLOW_FAUCET_ENABLED') === 'true' ? { faucetAccountIndex: Number(faucetIndex) } : {}),
     log,
@@ -50,14 +49,13 @@ async function realDeps(log: (line: string) => void): Promise<OrchestratorDeps> 
 }
 
 async function emulatedDeps(log: (line: string) => void): Promise<OrchestratorDeps> {
-  const emulator = createBeldexEmulator({ fundAtomic: 100_000_000_000n, daemonAssetTags: true });
+  const emulator = createBeldexEmulator({ fundAtomic: 300_000_000_000n });
   // Each emulated run starts a fresh chain: previous state would be meaningless.
   const artifactsDir = path.join(WEB_ROOT, '.data', 'emulated-artifacts');
   await rm(artifactsDir, { recursive: true, force: true });
   return {
     wallet: new WalletRpc(new JsonRpcClient({ url: 'http://emulator/wallet', fetch: emulator.walletFetch })),
     daemon: new DaemonRpc(new JsonRpcClient({ url: 'http://emulator/daemon', fetch: emulator.daemonFetch })),
-    descriptorDir: await mkdtemp(path.join(tmpdir(), 'belflow-descriptors-')),
     artifactsDir,
     faucetAccountIndex: 1,
     explorerTxUrl: 'emulated://tx/',

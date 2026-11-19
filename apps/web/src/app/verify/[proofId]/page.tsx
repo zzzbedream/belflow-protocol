@@ -38,9 +38,8 @@ interface Verification {
 }
 
 const LEVEL_TEXT: Record<string, string> = {
-  CRYPTOGRAPHIC_FULL: 'The node attributed the received output to this asset.',
-  DAEMON_EXTRACTED: 'The asset tag was read from the decoded transaction on the node.',
-  ISSUER_SIGNED_DECLARATION: 'Amount proven by check_tx_key; the asset is bound by the payer’s wallet signature.',
+  CRYPTOGRAPHIC_FULL: 'check_tx_key decoded this token and amount from the tx key (token_received).',
+  ISSUER_SIGNED_DECLARATION: 'Amount proven by check_tx_key; the token is bound by the payer’s wallet signature.',
 };
 
 async function fetchProof(proofId: string, passcode: string): Promise<{ proof?: ProofView; needsPasscode?: boolean }> {

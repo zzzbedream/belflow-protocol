@@ -1,13 +1,18 @@
 import type { JsonRpcClient } from './JsonRpcClient';
+import { stringifyJsonSafe } from './json';
 import { WALLET_METHODS } from './methods';
+
+// Request and response shapes of beldex-wallet-rpc on feature-privacy-token
+// (src/wallet/wallet_rpc_server_commands_defs.h, transfer_destination.h,
+// transfer_view.cpp). Token ids are hex; an empty or omitted token_id is BDX.
 
 type RpcAmount = number | string;
 
 export interface TransferDestination {
   address: string;
   amount: bigint;
-  /** Empty or omitted = native BDX, otherwise hex asset id. */
-  asset_id?: string;
+  /** Empty or omitted = native BDX, otherwise the hex token id. */
+  token_id?: string;
 }
 
 export interface TransferResult {
@@ -24,12 +29,18 @@ export interface TransferSplitResult {
   fee_list?: RpcAmount[];
 }
 
+export interface TokenReceivedEntry {
+  token_id: string;
+  amount: RpcAmount;
+}
+
 export interface CheckTxKeyResult {
+  /** Native BDX paid to the address (txout_to_key outputs only). */
   received: RpcAmount;
+  /** Privacy tokens paid to the address (tx_out_zyphora outputs), one entry per token id. */
+  token_received?: TokenReceivedEntry[];
   in_pool: boolean;
   confirmations: RpcAmount;
-  /** Not returned by the Proto branch today; read if a future build adds it. */
-  asset_id?: string;
 }
 
 export interface WalletTransferEntry {
@@ -37,16 +48,17 @@ export interface WalletTransferEntry {
   type?: string;
   amount?: RpcAmount;
   address?: string;
-  asset_id?: string;
+  /** Omitted or empty for BDX. */
+  token_id?: string;
   height?: number;
   timestamp?: number;
   confirmations?: number;
-  destinations?: Array<{ address: string; amount: RpcAmount; asset_id?: string }>;
+  destinations?: Array<{ address: string; amount: RpcAmount; token_id?: string }>;
   [key: string]: unknown;
 }
 
-export interface AssetBalanceEntry {
-  asset_id: string;
+export interface TokenBalanceEntry {
+  token_id: string;
   ticker?: string;
   balance: RpcAmount;
   unlocked_balance: RpcAmount;
@@ -56,26 +68,50 @@ export interface WalletBalance {
   balance: RpcAmount;
   unlocked_balance: RpcAmount;
   blocks_to_unlock?: number;
-  asset_balances?: AssetBalanceEntry[];
+  token_balances?: TokenBalanceEntry[];
 }
 
-export interface OwnedAsset {
-  asset_id: string;
+export interface OwnedToken {
+  token_id: string;
   full_name: string;
   ticker: string;
   max_supply?: RpcAmount;
   current_supply?: RpcAmount;
   decimal_point?: number;
+  meta_info?: string;
 }
 
-export interface DeployAssetResult {
-  asset_id: string;
+/** Token descriptor accepted inline by register_privacy_token (json_string). */
+export interface TokenDescriptor {
+  ticker: string;
+  full_name: string;
+  total_max_supply: bigint;
+  current_supply: bigint;
+  decimal_point: number;
+  meta_info: string;
+}
+
+export interface RegisterTokenResult {
+  token_id: string;
   tx_hash: string;
   tx_key?: string;
   ticker?: string;
   full_name?: string;
   tx_fee?: RpcAmount;
 }
+
+export interface TokenOperationResult {
+  tx_hash: string;
+  tx_key?: string;
+  fee?: RpcAmount;
+}
+
+/** TOKEN_DESCRIPTOR_VERSION in src/cryptonote_basic/token_descriptor.h. */
+export const TOKEN_DESCRIPTOR_VERSION = 1;
+
+/** Serializes a descriptor with u64 amounts as plain JSON numbers. */
+export const descriptorJson = (descriptor: TokenDescriptor): string =>
+  stringifyJsonSafe({ version: TOKEN_DESCRIPTOR_VERSION, ...descriptor });
 
 /** beldex-wallet-rpc client. Spending methods must only be reachable from authenticated server code. */
 export class WalletRpc {
@@ -146,20 +182,36 @@ export class WalletRpc {
     return this.client.call(WALLET_METHODS.bnsDecryptValue, { name, type, encrypted_value: encryptedValue });
   }
 
-  deployNewAsset(jsonFilename: string, priority: number): Promise<DeployAssetResult> {
-    return this.client.call(WALLET_METHODS.deployNewAsset, {
-      json_filename: jsonFilename,
+  /** Registers a privacy token from an inline descriptor; no file is shared with the wallet host. */
+  registerPrivacyToken(descriptor: TokenDescriptor, priority: number, accountIndex = 0): Promise<RegisterTokenResult> {
+    return this.client.call(WALLET_METHODS.registerPrivacyToken, {
+      json_string: descriptorJson(descriptor),
       priority,
+      account_index: accountIndex,
       get_tx_key: true,
     });
   }
 
-  emitAsset(assetId: string, amount: bigint, priority: number): Promise<TransferResult> {
-    return this.client.call(WALLET_METHODS.emitAsset, { asset_id: assetId, amount, priority, get_tx_key: true });
+  mintToken(tokenId: string, amount: bigint, priority: number, accountIndex = 0): Promise<TokenOperationResult> {
+    return this.client.call(WALLET_METHODS.mintToken, { token_id: tokenId, amount, priority, account_index: accountIndex, get_tx_key: true });
   }
 
-  getOwnedAssets(): Promise<{ assets?: OwnedAsset[] }> {
-    return this.client.call(WALLET_METHODS.getOwnedAssets);
+  burnToken(tokenId: string, amount: bigint, priority: number, accountIndex = 0): Promise<TokenOperationResult> {
+    return this.client.call(WALLET_METHODS.burnToken, { token_id: tokenId, amount, priority, account_index: accountIndex, get_tx_key: true });
+  }
+
+  updateToken(tokenId: string, descriptor: TokenDescriptor, priority: number, accountIndex = 0): Promise<TokenOperationResult> {
+    return this.client.call(WALLET_METHODS.updateToken, {
+      token_id: tokenId,
+      json_string: descriptorJson(descriptor),
+      priority,
+      account_index: accountIndex,
+      get_tx_key: true,
+    });
+  }
+
+  getOwnedTokens(): Promise<{ tokens?: OwnedToken[] }> {
+    return this.client.call(WALLET_METHODS.getOwnedTokens);
   }
 
   sign(data: string): Promise<{ signature: string }> {

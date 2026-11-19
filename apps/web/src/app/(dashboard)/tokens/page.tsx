@@ -50,9 +50,9 @@ export default function TokensPage() {
 
   return (
     <>
-      <PageHeader index="02" title="Token Studio" lede="Confidential Assets on Proto (HF 22) · deploy_new_asset" />
+      <PageHeader index="02" title="Token Studio" lede="Privacy Tokens on Proto (HF 22) · register_privacy_token" />
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
-        <Panel kicker="deploy_new_asset" title="Mint a Privacy Token" tone="raised">
+        <Panel kicker="register_privacy_token" title="Register a Privacy Token" tone="raised">
           <RingMixer labels={[form.ticker]} phase={isBusy ? 'broadcasting' : minted ? 'confirmed' : 'preview'} className="mb-4" />
           <div className="mb-4 flex flex-wrap gap-2">
             {PRESETS.map((preset) => (
@@ -90,7 +90,7 @@ export default function TokensPage() {
           {error && <Notice tone="error" className="mt-4">{error}</Notice>}
           {minted && (
             <Notice tone="success" title={`${minted.ticker} deployed`} className="mt-4">
-              Asset id <HashChip value={minted.tokenId} />
+              Token id <HashChip value={minted.tokenId} />
             </Notice>
           )}
         </Panel>

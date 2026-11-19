@@ -28,7 +28,6 @@ export function statusTone(status: string): Tone {
       return 'verified';
     case 'WAITING_UTXO_UNLOCK':
     case 'SUBMITTED':
-    case 'DAEMON_EXTRACTED':
       return 'flash';
     case 'FAILED':
       return 'danger';

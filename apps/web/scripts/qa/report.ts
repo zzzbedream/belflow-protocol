@@ -30,22 +30,20 @@ export interface TestnetEvidence {
   updatedAt?: string;
   preflight?: { height: number; nettype: string };
   presplit?: { txHashes: string[]; outputs: number };
-  assets?: Record<string, { ticker?: string; assetId?: string; deployTxHash?: string } | undefined>;
+  tokens?: Record<string, { ticker?: string; tokenId?: string; registerTxHash?: string } | undefined>;
   forensic?: {
     splitTxHashes: string[];
     flashTxHash: string;
-    extractorRecognizedAssetTags: boolean;
-    zarcanumIgnoredByCheckTxKey?: boolean;
+    checkTxKeyMatchesSent?: boolean;
     belflowDecoder?: { status: string; detail?: string };
   };
   aud04?: {
     txHash: string;
-    claimedAsset: string;
-    paidAsset: string;
+    claimedToken: string;
+    paidToken: string;
     rejected: boolean;
     failures: string[];
     level: string | null;
-    checkTxKeyReceivedAtomic?: string;
     diagnosis?: string;
   };
   x402?: { txHash: string; status: number; settledFromMempool: boolean | null; assetVerificationLevel: string | null };
@@ -123,7 +121,7 @@ export function parseCoverage(pkg: string, json: { total?: Record<string, { pct?
 /** The five adversarial audits and what each one proves. */
 export const AUDITS = [
   { id: 'AUD-01', threat: 'Precision loss in amounts (9-decimal BDX vs 6-decimal tokens, u64 overflow)' },
-  { id: 'AUD-02', threat: 'Asset confusion: paying one asset and claiming another (invoices, x402, audit proofs)' },
+  { id: 'AUD-02', threat: 'Token confusion: paying one token (or BDX) and claiming another (invoices, x402, audit proofs)' },
   { id: 'AUD-03', threat: 'Races: replayed x402 nonces and tx hashes, duplicate payroll submissions' },
   { id: 'AUD-04', threat: 'Broadcast then timeout mid-payroll: no blind resend, reconciliation from wallet history' },
   { id: 'AUD-05', threat: 'Leakage: caching headers, stack traces, RPC URLs, raw client IPs' },
@@ -200,7 +198,7 @@ function renderTestnet(evidence: TestnetEvidence | null): string[] {
   if (!evidence) {
     return [
       ...head,
-      '**Pending.** No `docs/artifacts/testnet-deployments.json` yet. Run `pnpm testnet:deploy` against a funded `beldex-wallet-rpc` built from `feature-confidential-asset` (see `docs/testnet-setup.md`), then `pnpm report:qa`.',
+      '**Pending.** No `docs/artifacts/testnet-deployments.json` yet. Run `pnpm testnet:deploy` against a funded `beldex-wallet-rpc` built from `feature-privacy-token` (see `docs/testnet-setup.md`), then `pnpm report:qa`.',
       '',
       'Until then, every result above comes from the deterministic mock devnet and from wallet-rpc/daemon emulators. None of it is on-chain evidence.',
     ];
@@ -209,28 +207,27 @@ function renderTestnet(evidence: TestnetEvidence | null): string[] {
   const rows: string[] = ['| Step | Result | Transaction |', '|---|---|---|'];
   if (evidence.preflight) rows.push(`| Pre-flight | ${evidence.preflight.nettype} at height ${evidence.preflight.height.toLocaleString('en-US')} | – |`);
   if (evidence.presplit) rows.push(`| UTXO pre-split | ${evidence.presplit.outputs} outputs | ${txLink(links, evidence.presplit.txHashes[0])} |`);
-  for (const [key, asset] of Object.entries(evidence.assets ?? {})) {
-    if (asset) rows.push(`| Deploy ${asset.ticker ?? key} | asset_id \`${(asset.assetId ?? '?').slice(0, 16)}…\` | ${txLink(links, asset.deployTxHash)} |`);
+  for (const [key, token] of Object.entries(evidence.tokens ?? {})) {
+    if (token) rows.push(`| Register ${token.ticker ?? key} | token_id \`${(token.tokenId ?? '?').slice(0, 16)}…\` | ${txLink(links, token.registerTxHash)} |`);
   }
   if (evidence.forensic) {
     rows.push(`| Multi-output transfer_split | ${evidence.forensic.splitTxHashes.length} tx | ${txLink(links, evidence.forensic.splitTxHashes[0])} |`);
     rows.push(`| Flash payment | sent | ${txLink(links, evidence.forensic.flashTxHash)} |`);
-    rows.push(`| Asset-tag extractor | ${evidence.forensic.extractorRecognizedAssetTags ? 'recognized tags (DAEMON_EXTRACTED reachable)' : 'did not recognize tags (DAEMON_EXTRACTED not reached)'} | – |`);
-    if (evidence.forensic.zarcanumIgnoredByCheckTxKey !== undefined) {
+    if (evidence.forensic.checkTxKeyMatchesSent !== undefined) {
       rows.push(
-        `| check_tx_key on Confidential Asset outputs | ${evidence.forensic.zarcanumIgnoredByCheckTxKey ? 'returned 0: `tx_out_zarcanum` outputs not counted' : 'returned the token amounts (no asset id)'} | – |`,
+        `| check_tx_key token_received | ${evidence.forensic.checkTxKeyMatchesSent ? '**matched every sent amount and token**' : '**did not match the sent amounts**'} | – |`,
       );
     }
     if (evidence.forensic.belflowDecoder) {
       const { status, detail } = evidence.forensic.belflowDecoder;
-      const text = status === 'matched' ? '**matched every sent amount and asset**' : status === 'mismatch' || status === 'error' ? `**${status}**: ${cell(detail ?? '')}` : status;
-      rows.push(`| BelFlow tx_key decoder (zarcanum) | ${text} | – |`);
+      const text = status === 'matched' ? '**matched every sent amount and token**' : status === 'mismatch' || status === 'error' ? `**${status}**: ${cell(detail ?? '')}` : status;
+      rows.push(`| BelFlow wallet-free decoder (zyphora) | ${text} | – |`);
     }
   }
   if (evidence.aud04) {
     const a = evidence.aud04;
-    rows.push(`| Live AUD-04 (paid ${a.paidAsset.slice(0, 8)}…, claimed ${a.claimedAsset.slice(0, 8)}…) | ${a.rejected ? `rejected: ${a.failures.join(', ')}` : '**ACCEPTED: BelFlow did not catch the wrong asset. Investigate before citing this run.**'} | ${txLink(links, a.txHash)} |`);
-    if (a.diagnosis) rows.push(`| AUD-04 diagnosis | \`${a.diagnosis}\` (check_tx_key received ${a.checkTxKeyReceivedAtomic ?? '?'}) | – |`);
+    rows.push(`| Live AUD-04 (paid ${a.paidToken.slice(0, 8)}…, claimed ${a.claimedToken.slice(0, 8)}…) | ${a.rejected ? `rejected: ${a.failures.join(', ')}` : '**ACCEPTED: BelFlow did not catch the wrong token. Investigate before citing this run.**'} | ${txLink(links, a.txHash)} |`);
+    if (a.diagnosis) rows.push(`| AUD-04 diagnosis | \`${a.diagnosis}\` | – |`);
   }
   if (evidence.x402) {
     const x = evidence.x402;
@@ -243,10 +240,10 @@ const LIMITS = [
   '## Scope and limits',
   '',
   '- The unit, audit and E2E suites run against the deterministic mock devnet and wallet-rpc/daemon emulators, not against Beldex nodes.',
-  '- Wallet-rpc `check_tx_key` returns no asset id. Reading `feature-confidential-asset` at commit `bc66339`, its helper (`wallet2::check_tx_key_helper`) only scans `txout_to_key` outputs, so Confidential Asset outputs (`tx_out_zarcanum`) are likely reported as 0. This is a source reading; the testnet run records the real behaviour.',
-  '- Token proofs are therefore `ISSUER_SIGNED_DECLARATION` unless the receiving wallet attributes the output (`CRYPTOGRAPHIC_FULL`) or the daemon asset-tag extractor recognizes the tag (`DAEMON_EXTRACTED`). The extractor is calibrated only after a real testnet run.',
-  '- AUD-02 models a verifier that receives an amount without an asset id and shows BelFlow rejects the wrong asset. If the branch reports 0 for asset outputs, the gap upstream is broader: `tx_key` proofs for Confidential Assets cannot be checked with `check_tx_key` at all. Neither case is a protocol vulnerability.',
-  '- Testnet activity claims are limited to what the public explorer shows: no user transactions observed since block 4,242,200 at the time of writing.',
+  '- Target: `Beldex-Coin/beldex` `feature-privacy-token` at `4d89104`. There, `check_tx_key` decodes `tx_out_zyphora` outputs and returns `token_received` (token id and amount); BelFlow uses it as the primary token proof (`CRYPTOGRAPHIC_FULL`).',
+  '- The wallet-free zyphora decoder and the wallet-rpc request/response shapes are checked against the C++ source and round-trip tests, not yet against live transactions. The testnet run (`pnpm testnet:deploy`) is the end-to-end check.',
+  '- A daemon cannot attribute a token: token ids are blinded per output (`docs/token-privacy.md` upstream). Decoded transactions are only used for flash and pool status.',
+  '- AUD-02 also models a backend that cannot attribute tokens (an unattributed amount) and shows BelFlow still never accepts the wrong token.',
 ];
 
 export function renderReport(input: ReportInput): string {

@@ -25,7 +25,6 @@ const schema = z.object({
   BELDEX_WALLET_RPC_URL: optionalUrl.default(''),
   BELDEX_WALLET_RPC_USER: optionalText,
   BELDEX_WALLET_RPC_PASSWORD: optionalText,
-  BELDEX_ASSET_DESCRIPTOR_DIR: optionalText,
   BELDEX_EXPLORER_API_URL: z.url().default('https://testnet.beldex.dev/api'),
   BELFLOW_TREASURY_ENABLED: z
     .string()

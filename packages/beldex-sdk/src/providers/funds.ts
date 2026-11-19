@@ -6,8 +6,9 @@ import type { WalletBalance, WalletRpc } from '../rpc/wallet';
 export interface FundsRequirement {
   /** Atomic BDX needed (amount + fee headroom). Every token send also spends BDX for the fee. */
   minBdxAtomic: bigint;
-  assetId?: string;
-  minAssetAtomic?: bigint;
+  /** Privacy token that must also be unlocked (hex token_id). */
+  tokenId?: string;
+  minTokenAtomic?: bigint;
   accountIndex?: number;
   pollMs?: number;
   timeoutMs?: number;
@@ -21,11 +22,11 @@ interface Amounts {
   unlocked: bigint;
 }
 
-function amountsFor(balance: WalletBalance, assetId: string): Amounts {
-  if (assetId === NATIVE_TOKEN_ID) {
+function amountsFor(balance: WalletBalance, tokenId: string): Amounts {
+  if (tokenId === NATIVE_TOKEN_ID) {
     return { total: toBigIntAmount(balance.balance), unlocked: toBigIntAmount(balance.unlocked_balance) };
   }
-  const entry = balance.asset_balances?.find((asset) => asset.asset_id.toLowerCase() === assetId.toLowerCase());
+  const entry = balance.token_balances?.find((token) => token.token_id.toLowerCase() === tokenId.toLowerCase());
   return { total: toBigIntAmount(entry?.balance), unlocked: toBigIntAmount(entry?.unlocked_balance) };
 }
 
@@ -33,7 +34,7 @@ const DEFAULT_POLL_MS = 10_000;
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
- * Waits until enough BDX (and optionally an asset) is UNLOCKED. Change from a
+ * Waits until enough BDX (and optionally a privacy token) is UNLOCKED. Change from a
  * previous send stays locked for 2 blocks; a token send also locks BDX change
  * (fee input). Throws InsufficientFundsError when even the total balance does
  * not cover the requirement, and FundsLockedError on timeout.
@@ -43,14 +44,14 @@ export async function waitForUnlockedFunds(wallet: WalletRpc, requirement: Funds
   const now = requirement.now ?? Date.now;
   const deadline = now() + (requirement.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const needs: Array<[string, bigint]> = [[NATIVE_TOKEN_ID, requirement.minBdxAtomic]];
-  if (requirement.assetId && requirement.minAssetAtomic !== undefined) needs.push([requirement.assetId, requirement.minAssetAtomic]);
+  if (requirement.tokenId && requirement.minTokenAtomic !== undefined) needs.push([requirement.tokenId, requirement.minTokenAtomic]);
 
   for (;;) {
     const balance = await wallet.getBalance(requirement.accountIndex ?? 0);
     let ready = true;
-    for (const [assetId, needed] of needs) {
-      const amounts = amountsFor(balance, assetId);
-      if (amounts.total < needed) throw new InsufficientFundsError(assetId);
+    for (const [tokenId, needed] of needs) {
+      const amounts = amountsFor(balance, tokenId);
+      if (amounts.total < needed) throw new InsufficientFundsError(tokenId);
       if (amounts.unlocked < needed) ready = false;
     }
     if (ready) return balance;

@@ -7,7 +7,7 @@ test('landing shows the architecture and launches the app', async ({ page }) => 
   await page.goto('/');
   await expect(page.getByRole('heading', { level: 1 })).toContainText('Prove one token payment');
   await expect(page.getByTestId('architecture-map')).toBeVisible();
-  await expect(page.getByTestId('proof-sequence')).toContainText('tx_out_zarcanum');
+  await expect(page.getByTestId('proof-sequence')).toContainText('tx_out_zyphora');
   await page.getByTestId('launch-app').click();
   await expect(page).toHaveURL(/\/treasury$/);
   await expect(page.getByRole('heading', { name: 'Confidential treasury' })).toBeVisible();

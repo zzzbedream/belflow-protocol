@@ -25,13 +25,13 @@ const APPS: MapNode[] = [
 const SDK: MapNode[] = [
   { id: 'providers', x: 360, y: 70, title: 'Providers', sub: 'extension · rpc · MockChain', caption: 'One interface over the browser extension, the wallet-rpc sidecar and a deterministic mock chain.' },
   { id: 'batch', x: 360, y: 150, title: 'Batch planner', sub: '15 outputs/tx · 2-block lock', caption: 'Groups recipients into multi-output transactions and waits out the change lock. Idempotent.' },
-  { id: 'verifier', x: 360, y: 230, title: 'Verifier', sub: 'tx_key + zarcanum decode', caption: 'Decodes tx_out_zarcanum outputs from the tx_key and checks amount and asset against the commitment.' },
-  { id: 'x402', x: 360, y: 310, title: 'x402 middleware', sub: 'single-use nonces · Flash', caption: 'Issues 402 challenges and accepts each payment once, in the quoted asset only.' },
+  { id: 'verifier', x: 360, y: 230, title: 'Verifier', sub: 'token_received + zyphora decode', caption: 'Checks check_tx_key token_received and, without a wallet, decodes tx_out_zyphora outputs from the tx_key against the commitment.' },
+  { id: 'x402', x: 360, y: 310, title: 'x402 middleware', sub: 'single-use nonces · Flash', caption: 'Issues 402 challenges and accepts each payment once, in the quoted token only.' },
 ];
 
 const BELDEX: MapNode[] = [
-  { id: 'wallet', x: 700, y: 110, title: 'beldex-wallet-rpc', sub: 'feature-confidential-asset', caption: 'Each organization runs its own wallet. BelFlow never holds keys or funds.' },
-  { id: 'daemon', x: 700, y: 270, title: 'beldexd', sub: 'Proto testnet', caption: 'Raw transactions for the zarcanum decoder and inspection.' },
+  { id: 'wallet', x: 700, y: 110, title: 'beldex-wallet-rpc', sub: 'feature-privacy-token', caption: 'Each organization runs its own wallet. BelFlow never holds keys or funds.' },
+  { id: 'daemon', x: 700, y: 270, title: 'beldexd', sub: 'Proto testnet', caption: 'Raw transactions for the zyphora decoder, token metadata and flash status.' },
 ];
 
 const NODES = [...APPS, ...SDK, ...BELDEX];

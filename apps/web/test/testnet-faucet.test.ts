@@ -20,7 +20,7 @@ beforeAll(() => {
     const results: Record<string, unknown> = {
       get_address: { address: TREASURY },
       get_height: { height: 4_300_000 },
-      get_balance: { balance: 50_000_000_000, unlocked_balance: unlocked, asset_balances: [] },
+      get_balance: { balance: 50_000_000_000, unlocked_balance: unlocked, token_balances: [] },
       transfer: { tx_hash: 'a'.repeat(64), tx_key: 'b'.repeat(64), fee: 1000 },
       store: {},
     };

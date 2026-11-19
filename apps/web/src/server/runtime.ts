@@ -13,7 +13,6 @@ import {
   WalletRpc,
 } from '@belflow/sdk';
 import { z } from 'zod';
-import { createAssetDescriptorWriter } from './assetDescriptor';
 import { serverEnv, type ServerEnv } from './env';
 import { notConfigured } from './errors';
 import { MOCK_ACCOUNTS, mockApi } from './mockChain';
@@ -89,7 +88,6 @@ async function buildTestnet(env: ServerEnv): Promise<NetworkRuntime> {
     wallet,
     network: 'testnet',
     ...(daemon ? { daemon } : { explorerApiUrl: env.BELDEX_EXPLORER_API_URL }),
-    ...(env.BELDEX_ASSET_DESCRIPTOR_DIR ? { writeAssetDescriptor: createAssetDescriptorWriter(env.BELDEX_ASSET_DESCRIPTOR_DIR) } : {}),
   });
   const { address } = await provider.connectWallet();
   const bnsBackend: BnsBackend = daemon

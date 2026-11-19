@@ -90,8 +90,8 @@ describe('AUD-04 wallet-rpc: broadcast then timeout', () => {
   });
 });
 
-describe('waitForUnlockedFunds (2-block change lock)', () => {
-  function walletWith(sequence: Array<{ balance: number; unlocked: number; assets?: Array<{ asset_id: string; balance: number; unlocked_balance: number }> }>) {
+describe('AUD-04 waitForUnlockedFunds (2-block change lock)', () => {
+  function walletWith(sequence: Array<{ balance: number; unlocked: number; assets?: Array<{ token_id: string; balance: number; unlocked_balance: number }> }>) {
     let call = 0;
     return new WalletRpc(
       new JsonRpcClient({
@@ -100,7 +100,7 @@ describe('waitForUnlockedFunds (2-block change lock)', () => {
           get_balance: () => {
             const step = sequence[Math.min(call, sequence.length - 1)]!;
             call += 1;
-            return { balance: step.balance, unlocked_balance: step.unlocked, asset_balances: step.assets ?? [] };
+            return { balance: step.balance, unlocked_balance: step.unlocked, token_balances: step.assets ?? [] };
           },
         }),
       }),
@@ -108,14 +108,14 @@ describe('waitForUnlockedFunds (2-block change lock)', () => {
   }
   const instant = { sleep: async () => undefined, pollMs: 1 };
 
-  it('polls until change unlocks, for BDX and the asset together', async () => {
+  it('polls until change unlocks, for BDX and the token together', async () => {
     const asset = 'e'.repeat(64);
     const wallet = walletWith([
-      { balance: 100, unlocked: 10, assets: [{ asset_id: asset, balance: 50, unlocked_balance: 0 }] },
-      { balance: 100, unlocked: 100, assets: [{ asset_id: asset, balance: 50, unlocked_balance: 0 }] },
-      { balance: 100, unlocked: 100, assets: [{ asset_id: asset, balance: 50, unlocked_balance: 50 }] },
+      { balance: 100, unlocked: 10, assets: [{ token_id: asset, balance: 50, unlocked_balance: 0 }] },
+      { balance: 100, unlocked: 100, assets: [{ token_id: asset, balance: 50, unlocked_balance: 0 }] },
+      { balance: 100, unlocked: 100, assets: [{ token_id: asset, balance: 50, unlocked_balance: 50 }] },
     ]);
-    await expect(waitForUnlockedFunds(wallet, { minBdxAtomic: 60n, assetId: asset, minAssetAtomic: 40n, ...instant })).resolves.toBeDefined();
+    await expect(waitForUnlockedFunds(wallet, { minBdxAtomic: 60n, tokenId: asset, minTokenAtomic: 40n, ...instant })).resolves.toBeDefined();
   });
 
   it('fails fast when the total cannot cover it and times out while locked', async () => {

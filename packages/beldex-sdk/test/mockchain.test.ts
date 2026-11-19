@@ -40,7 +40,7 @@ describe('MockChain', () => {
     const tx = chain.transfer(treasury, [{ address: alice, assetId: 'BDX', amount: 5n * BDX }], { flash: false });
     expect(tx.height).toBe(chain.height);
     const check = chain.checkTxKey(tx.txHash, tx.txKey, alice);
-    expect(check).toMatchObject({ receivedAtomic: 5n * BDX, inPool: false, assetId: 'BDX', confirmations: 1 });
+    expect(check).toMatchObject({ receivedAtomic: 5n * BDX, tokenReceived: [], inPool: false, confirmations: 1 });
     expect(chain.getBalances(alice).BDX?.total).toBe(5n * BDX);
     expect(chain.getBalances(treasury).BDX?.total).toBe(995n * BDX - BigInt(tx.fee));
     expect(chain.checkTxKey(tx.txHash, 'f'.repeat(64), alice).receivedAtomic).toBe(0n);
@@ -69,11 +69,11 @@ describe('MockChain', () => {
     );
   });
 
-  it('deploys privacy tokens and sends them per asset', () => {
+  it('deploys privacy tokens, sends them per token and reports them in tokenReceived', () => {
     const { asset } = chain.deployAsset(treasury, { ticker: 'bUSD', name: 'Beldex Confidential USD', decimals: 6, supply: 1_000_000n });
     chain.mineBlocks(2);
     const tx = chain.transfer(treasury, [{ address: alice, assetId: asset.assetId, amount: 250_000n }], { flash: false });
-    expect(chain.checkTxKey(tx.txHash, tx.txKey, alice)).toMatchObject({ receivedAtomic: 250_000n, assetId: asset.assetId });
+    expect(chain.checkTxKey(tx.txHash, tx.txKey, alice)).toMatchObject({ receivedAtomic: 0n, tokenReceived: [{ tokenId: asset.assetId, amountAtomic: 250_000n }] });
     expect(chain.getIncomingTransfers(tx.txHash, alice)).toEqual([{ assetId: asset.assetId, amount: 250_000n }]);
     expect(chain.getIncomingTransfers('0'.repeat(64), alice)).toEqual([]);
     expect(chain.getAsset(asset.assetId)?.ticker).toBe('bUSD');
@@ -153,7 +153,7 @@ describe('mock JSON-RPC bridge', () => {
     await http.mineBlocks(2);
     const tx = await http.transfer(treasury, [{ address: alice, assetId: asset.assetId, amountAtomic: '10' }], true);
     const check = await http.checkTxKey(tx.txHash, tx.txKey, alice);
-    expect(check).toMatchObject({ receivedAtomic: '10', inPool: true, assetId: asset.assetId });
+    expect(check).toMatchObject({ receivedAtomic: '0', tokenReceived: [{ tokenId: asset.assetId, amountAtomic: '10' }], inPool: true });
     expect(await http.getTransaction(tx.txHash)).toMatchObject({ flash: true, inPool: true });
     expect(await http.getIncomingTransfers(tx.txHash, alice)).toEqual([{ assetId: asset.assetId, amountAtomic: '10' }]);
     expect(await http.getTxKey(tx.txHash, treasury)).toBe(tx.txKey);

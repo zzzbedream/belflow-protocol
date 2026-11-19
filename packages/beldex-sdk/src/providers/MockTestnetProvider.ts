@@ -148,7 +148,11 @@ export class MockTestnetProvider implements IBeldexProvider {
     return {
       checkTxKey: async (txHash, txKey, address) => {
         const check = await this.api.checkTxKey(txHash, txKey, address);
-        return { ...check, receivedAtomic: BigInt(check.receivedAtomic) };
+        return {
+          ...check,
+          receivedAtomic: BigInt(check.receivedAtomic),
+          tokenReceived: check.tokenReceived.map((entry) => ({ tokenId: entry.tokenId, amountAtomic: BigInt(entry.amountAtomic) })),
+        };
       },
       receiverTransfers: async (txHash, address) =>
         (await this.api.getIncomingTransfers(txHash, address)).map((entry) => ({
@@ -157,9 +161,8 @@ export class MockTestnetProvider implements IBeldexProvider {
         })),
       inspectTx: async (txHash) => {
         const view = await this.api.getTransaction(txHash);
-        return view
-          ? { assetIds: view.assetIds, isFlash: view.flash, inPool: view.inPool, blockHeight: view.blockHeight }
-          : null;
+        // Like a real daemon, the decoded tx never attributes a token (ids are blinded).
+        return view ? { isFlash: view.flash, inPool: view.inPool, blockHeight: view.blockHeight } : null;
       },
       verifySignature: (message, address, signature) => this.api.verify(message, address, signature),
     };

@@ -42,7 +42,10 @@ describe('PrismaNonceStore', () => {
     const tx = crypto.randomUUID().replace(/-/g, '').padEnd(64, '0');
 
     const results = await Promise.all([store.consume(a, tx, now, 'alpha-bot.bdx'), store.consume(a, tx, now)]);
-    expect(results.sort()).toEqual(['already-consumed', 'ok']);
+    // Exactly one consume wins. The loser is refused by whichever claim it hits
+    // first (the nonce or the tx hash); both refusals are correct.
+    expect(results.filter((result) => result === 'ok')).toHaveLength(1);
+    expect(['already-consumed', 'tx-reused']).toContain(results.find((result) => result !== 'ok'));
     expect(await store.consume(b, tx, now)).toBe('tx-reused');
     expect(await store.consume(c, 'f'.repeat(64), now)).toBe('expired');
     expect(await store.consume(crypto.randomUUID(), 'e'.repeat(64), now)).toBe('unknown');

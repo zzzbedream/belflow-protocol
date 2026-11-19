@@ -18,7 +18,7 @@ export interface ProviderCapabilities {
   readonly batch: boolean;
   /** Returns the tx secret key needed for selective audit proofs. */
   readonly txKeys: boolean;
-  /** Deploy, emit and send Privacy Tokens (Confidential Assets). */
+  /** Register, mint and send privacy tokens (register_privacy_token, mint_token). */
   readonly assets: boolean;
   /** Resolve .bdx names. */
   readonly bns: boolean;
@@ -31,7 +31,7 @@ export interface ProviderCapabilities {
 }
 
 export interface PrivacyTokenMetadata {
-  /** Hash identifier of the Confidential Asset (asset_id on Proto). "BDX" for the native coin. */
+  /** Hex token_id of the privacy token (feature-privacy-token). "BDX" for the native coin. */
   tokenId: string;
   ticker: string;
   name: string;
@@ -96,16 +96,17 @@ export interface ConfidentialTxResult {
 }
 
 /**
- * How strongly the asset (token) identity of a verified payment is proven.
- * check_tx_key on the Proto branch returns an amount but no asset id, so a
- * second layer is always required.
+ * How strongly the token identity of a verified payment is proven. A daemon
+ * cannot attribute a token on its own: token ids are blinded per output
+ * (docs/token-privacy.md on feature-privacy-token).
  */
 export type AssetVerificationLevel =
-  /** The node or the receiving wallet reported the asset id cryptographically. */
+  /**
+   * The token id was recovered cryptographically: check_tx_key's
+   * token_received, the wallet-free zyphora decode, or the receiving wallet.
+   */
   | 'CRYPTOGRAPHIC_FULL'
-  /** The asset tag was read from the decoded transaction on the daemon. */
-  | 'DAEMON_EXTRACTED'
-  /** Only the payer's signed declaration binds txHash + asset + amount + recipient. */
+  /** Only the payer's signed declaration binds txHash + token + amount + recipient. */
   | 'ISSUER_SIGNED_DECLARATION';
 
 export interface SelectiveAuditProof {
@@ -136,12 +137,17 @@ export interface X402PaymentChallenge {
 
 /** Raw result of a check_tx_key style call, in atomic units. */
 export interface TxKeyCheck {
+  /** Native BDX paid to the address (check_tx_key `received`). */
   receivedAtomic: bigint;
+  /**
+   * Privacy tokens paid to the address, one entry per token id
+   * (check_tx_key `token_received`). Undefined when the backend cannot
+   * attribute tokens; then `receivedAtomic` carries no token identity.
+   */
+  tokenReceived?: Array<{ tokenId: string; amountAtomic: bigint }>;
   inPool: boolean;
   confirmations: number;
   blockHeight: number | null;
-  /** Present only when the backend can attribute the received amount to an asset. */
-  assetId?: string;
 }
 
 export interface VerificationResult {

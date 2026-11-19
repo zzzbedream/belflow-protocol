@@ -21,7 +21,7 @@ function fakeNetwork(input: RequestInfo | URL, init?: RequestInit): Response {
     walletCalls.push(body.method);
     const results: Record<string, unknown> = {
       get_address: { address: TREASURY },
-      get_balance: { balance: 12_500_000_000, unlocked_balance: 12_500_000_000, asset_balances: [] },
+      get_balance: { balance: 12_500_000_000, unlocked_balance: 12_500_000_000, token_balances: [] },
       get_height: { height: 4_283_500 },
       verify: { good: body.params.signature === 'SigV1-good' },
     };

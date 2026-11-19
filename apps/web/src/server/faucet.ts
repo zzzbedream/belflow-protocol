@@ -180,7 +180,7 @@ export async function claimFaucet(input: z.infer<typeof faucetRequestSchema>, cl
     const ready = await hasUnlockedFunds(faucet.wallet, {
       accountIndex: faucet.accountIndex,
       minBdxAtomic: parseUnits(FAUCET_GRANT.bdx, BDX_DECIMALS) + parseUnits(FEE_HEADROOM_BDX, BDX_DECIMALS),
-      ...(token ? { assetId: token.tokenId, minAssetAtomic: parseUnits(FAUCET_GRANT.token, token.decimals) } : {}),
+      ...(token ? { tokenId: token.tokenId, minTokenAtomic: parseUnits(FAUCET_GRANT.token, token.decimals) } : {}),
     });
     if (!ready) {
       throw new HttpError(503, `Faucet funds are in their 2-block unlock window. Retry in ~${RETRY_AFTER_SECONDS} s.`, 'FAUCET_COOLDOWN');
